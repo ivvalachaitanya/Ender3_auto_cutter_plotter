@@ -18,6 +18,11 @@ try:
 except ImportError:
     svgpathtools = None
 
+try:
+    import svgelements
+except ImportError:
+    svgelements = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,94 +36,79 @@ class SVGParser:
         :param step_size_mm: Maximum segment length when sampling curves (mm)
         """
         self.step_size_mm = step_size_mm
-        if svgpathtools is None:
-            raise RuntimeError("svgpathtools is required for SVG parsing.")
-
-    @staticmethod
-    def _get_page_height_and_scale(svg_file: str) -> Tuple[float, float]:
-        """
-        Determine SVG page height (mm) and scale factor (25.4 / 96.0) to convert Inkscape user unit px to mm.
-        """
-        px_to_mm_scale = 25.4 / 96.0  # Standard 96 dpi Inkscape user unit scaling (1 px = 0.264583 mm)
-        page_height_mm = 297.0  # Default A4 height (mm)
-
-        try:
-            import xml.etree.ElementTree as ET
-            tree = ET.parse(svg_file)
-            root = tree.getroot()
-
-            # Check height attribute (e.g. height="297mm" or height="1122.52")
-            height_str = root.get('height', '')
-            if 'mm' in height_str:
-                page_height_mm = float(height_str.replace('mm', '').strip())
-            elif height_str:
-                val = float(height_str.replace('px', '').strip())
-                page_height_mm = val * px_to_mm_scale
-            else:
-                viewbox = root.get('viewBox')
-                if viewbox:
-                    parts = [float(p) for p in viewbox.replace(',', ' ').split()]
-                    if len(parts) == 4:
-                        page_height_mm = parts[3] * px_to_mm_scale
-
-        except Exception as e:
-            logger.warning("Could not parse SVG page height: %s. Using default 297mm.", e)
-
-        return page_height_mm, px_to_mm_scale
+        if svgpathtools is None and svgelements is None:
+            raise RuntimeError("svgelements or svgpathtools is required for SVG parsing.")
 
     def parse_svg_paths(self, svg_file: str, flip_y: bool = True) -> List[List[Tuple[float, float]]]:
         """
         Parse vector paths in SVG file into discretized polylines (mm).
 
+        Resolves all group transforms, matrix scaling, and SVG units.
+
         :param svg_file: Path to SVG file
         :param flip_y: If True, flips Y axis (SVG top-left to Printer Bed bottom-left)
         :return: List of contours, where each contour is a list of (x, y) tuples
         """
-        paths, attributes = svgpathtools.svg2paths(svg_file)
-        page_height_mm, scale = self._get_page_height_and_scale(svg_file)
-
         contours: List[List[Tuple[float, float]]] = []
+        px_to_mm = 25.4 / 96.0
 
+        if svgelements is not None:
+            svg = svgelements.SVG.parse(svg_file)
+            page_height_mm = (svg.height if svg.height else 1122.52) * px_to_mm
+
+            for elem in svg.elements():
+                if isinstance(elem, svgelements.Path) and len(elem) > 0:
+                    elem_id = str(getattr(elem, 'id', '')).lower()
+                    if 'fiducial' in elem_id or 'aruco' in elem_id:
+                        logger.info("Skipping fiducial marker path ID '%s' from cut list.", elem_id)
+                        continue
+
+                    contour: List[Tuple[float, float]] = []
+                    length_px = elem.length()
+                    length_mm = length_px * px_to_mm
+                    num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
+
+                    for i in range(num_samples + 1):
+                        t = i / float(num_samples)
+                        pt = elem.point(t)
+                        if pt is None:
+                            continue
+                        x_mm = pt.x * px_to_mm
+                        y_raw_mm = pt.y * px_to_mm
+                        y_mm = (page_height_mm - y_raw_mm) if flip_y else y_raw_mm
+
+                        if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
+                            contour.append((x_mm, y_mm))
+
+                    if len(contour) >= 2:
+                        contours.append(contour)
+
+            logger.info("Parsed %d path contours from SVG '%s' using svgelements.", len(contours), svg_file)
+            return contours
+
+        # Fallback to svgpathtools if svgelements is unavailable
+        paths, attributes = svgpathtools.svg2paths(svg_file)
+        page_height_mm = 297.0
         for path, attr in zip(paths, attributes):
             if len(path) == 0:
                 continue
-
-            # Skip paths that belong to fiducial/aruco markers or layer 'Print'
             elem_id = str(attr.get('id', '')).lower()
             if 'fiducial' in elem_id or 'aruco' in elem_id:
-                logger.info("Skipping fiducial marker path ID '%s' from cut list.", elem_id)
                 continue
-
-            contour: List[Tuple[float, float]] = []
-
-            for segment in path:
-                length_mm = segment.length() * scale
-                num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
-
-                for i in range(num_samples):
-                    t = i / float(num_samples)
-                    pt = segment.point(t)
-                    x_mm = pt.real * scale
-                    y_raw = pt.imag * scale
-                    y_mm = (page_height_mm - y_raw) if flip_y else y_raw
-
-                    # Avoid redundant consecutive identical points
-                    if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
-                        contour.append((x_mm, y_mm))
-
-            # Sample end point of last segment
-            end_pt = path[-1].point(1.0)
-            end_x = end_pt.real * scale
-            end_y_raw = end_pt.imag * scale
-            end_y = (page_height_mm - end_y_raw) if flip_y else end_y_raw
-
-            if not contour or (abs(contour[-1][0] - end_x) > 1e-4 or abs(contour[-1][1] - end_y) > 1e-4):
-                contour.append((end_x, end_y))
-
+            contour = []
+            length_mm = path.length() * px_to_mm
+            num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
+            for i in range(num_samples + 1):
+                t = i / float(num_samples)
+                pt = path.point(t)
+                x_mm = pt.real * px_to_mm
+                y_raw = pt.imag * px_to_mm
+                y_mm = (page_height_mm - y_raw) if flip_y else y_raw
+                if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
+                    contour.append((x_mm, y_mm))
             if len(contour) >= 2:
                 contours.append(contour)
 
-        logger.info("Parsed %d path contours from SVG '%s'.", len(contours), svg_file)
         return contours
 
 
