@@ -129,17 +129,24 @@ def main():
                 label = f"Fiducial U:{u:.1f} V:{v:.1f}"
                 cv2.putText(display_frame, label, (u_int + 10, v_int - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # Auto Focus Lock Feature: Once a fiducial is found, lock focus so it stays sharp
-        if args.auto_lock_focus and len(detected_records) > 0 and not focus_locked:
-            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-            focus_locked = True
-            autofocus_enabled = False
-            print("[CAMERA] Fiducial detected! Focus automatically locked.")
+        # Calculate image sharpness score (Laplacian Variance)
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        sharpness_score = float(cv2.Laplacian(gray_frame, cv2.CV_64F).var())
+        if sharpness_score < 100:
+            sharp_text = f"Sharpness: {sharpness_score:.1f} (BLURRY - Move object 10-20 cm further away)"
+            sharp_color = (0, 0, 255)  # Red for blurry
+        elif sharpness_score < 250:
+            sharp_text = f"Sharpness: {sharpness_score:.1f} (OK)"
+            sharp_color = (0, 255, 255)  # Yellow
+        else:
+            sharp_text = f"Sharpness: {sharpness_score:.1f} (SHARP)"
+            sharp_color = (0, 255, 0)  # Green
 
         # Overlay status bar
         focus_status = "LOCKED" if focus_locked else ("AUTO" if autofocus_enabled else f"MANUAL ({current_focus:.0f})")
         cv2.putText(display_frame, f"FPS: {fps:.1f} | Focus: {focus_status}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-        cv2.putText(display_frame, f"Detected Fiducials: {len(detected_records)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(display_frame, sharp_text, (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, sharp_color, 2)
+        cv2.putText(display_frame, f"Detected Fiducials: {len(detected_records)}", (10, 71), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         cv2.putText(display_frame, "Keys: 's'=Save screenshot+coords | 'f'=Focus Lock | '['/']'=Focus Adj | 'q'=Quit", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
         try:
