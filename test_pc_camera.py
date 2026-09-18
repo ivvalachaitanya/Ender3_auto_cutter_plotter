@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-PC Camera & Vision Testing Tool for Ender 3 Auto Cutter Pipeline.
+PC Camera & Vision Testing Tool with Focus Control & Pixel Coordinate Capture.
 
-Run this script directly on your PC with a connected webcam to test:
-1. Live camera feed capture.
-2. Real-time ArUco marker (DICT_4X4_50) detection and sub-pixel circle detection.
-3. Affine transformation & live SVG cut-path overlay preview on your screen!
+Features:
+1. Live camera feed capture with sub-pixel fiducial detection (ArUco or Circle).
+2. Save annotated screenshots rendered with exact (u, v) pixel coordinates + JSON metadata sidecar!
+3. Hardware camera focus control (autofocus lock, manual focus adjustment).
 
 Usage:
     python test_pc_camera.py --camera 0 --fiducial-type aruco
-    python test_pc_camera.py --camera 0 --svg sample_test.svg
+    python test_pc_camera.py --camera 0 --auto-lock-focus
+    python test_pc_camera.py --camera 0 --manual-focus 50
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -35,38 +37,43 @@ from drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test Vision Detection on PC Camera.")
+    parser = argparse.ArgumentParser(description="Test Vision Detection on PC Camera with Focus Control.")
     parser.add_argument("--camera", type=int, default=0, help="PC Webcam index (default: 0).")
     parser.add_argument("--fiducial-type", type=str, choices=["aruco", "circle"], default="aruco", help="Fiducial type to detect.")
     parser.add_argument("--svg", type=str, default="sample_test.svg", help="Path to sample SVG for overlay test.")
-    parser.add_argument("--mm-per-pixel", type=float, default=0.05, help="Estimated mm per pixel scale.")
+    parser.add_argument("--auto-lock-focus", action="store_true", help="Automatically lock camera focus when a fiducial is found.")
+    parser.add_argument("--manual-focus", type=float, default=None, help="Set manual focus value (0 to 255).")
     args = parser.parse_args()
 
     print("======================================================")
     print("Starting PC Camera & Vision Test Tool")
-    print(f"Camera Device Index: {args.camera}")
-    print(f"Fiducial Type: {args.fiducial_type.upper()}")
-    print("Press 'q' to exit, 's' to save current snapshot frame.")
+    print(f"Camera Index: {args.camera} | Fiducial Type: {args.fiducial_type.upper()}")
+    print("Controls:")
+    print("  's' : Save screenshot image + JSON pixel coordinates")
+    print("  'f' : Toggle Auto-Focus / Lock Focus")
+    print("  '[' / ']' : Decrease / Increase Manual Focus")
+    print("  'q' : Quit")
     print("======================================================")
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print(f"Error: Could not open camera device index {args.camera}.")
-        print("Tip: If using external USB webcam, try --camera 1 or --camera 2.")
         sys.exit(1)
+
+    # Initial focus configuration
+    autofocus_enabled = True
+    current_focus = 50.0
+
+    if args.manual_focus is not None:
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        cap.set(cv2.CAP_PROP_FOCUS, args.manual_focus)
+        autofocus_enabled = False
+        current_focus = args.manual_focus
+        print(f"Set initial manual focus to {current_focus}")
 
     detector = FiducialDetector(fiducial_type=args.fiducial_type)
 
-    # Optional SVG parsing for path overlay
-    svg_contours = []
-    if os.path.isfile(args.svg):
-        try:
-            parser_svg = SVGParser(step_size_mm=1.0)
-            svg_contours = parser_svg.parse_svg_paths(args.svg)
-            print(f"Loaded SVG '{args.svg}' with {len(svg_contours)} path contours.")
-        except Exception as e:
-            print(f"Warning: Could not parse SVG '{args.svg}': {e}")
-
+    focus_locked = False
     frame_count = 0
     fps_start_time = time.time()
     fps = 0.0
@@ -91,65 +98,118 @@ def main():
         cv2.line(display_frame, (center_u, center_v - 15), (center_u, center_v + 15), (255, 0, 0), 1)
         cv2.circle(display_frame, (center_u, center_v), 3, (255, 0, 0), -1)
 
-        detected_centers = []
+        detected_records = []
 
         if args.fiducial_type == "aruco":
             markers = detector.detect_aruco_markers(frame)
             for marker_id, (u, v) in markers.items():
                 u_int, v_int = int(round(u)), int(round(v))
-                detected_centers.append((u, v))
+                detected_records.append({
+                    "id": marker_id,
+                    "pixel_u": round(u, 3),
+                    "pixel_v": round(v, 3),
+                })
 
-                # Draw green marker box and center point
+                # Draw bounding marker indicators and pixel coordinates on frame
                 cv2.circle(display_frame, (u_int, v_int), 6, (0, 255, 0), -1)
-                cv2.putText(
-                    display_frame,
-                    f"ArUco ID {marker_id} ({u_int}, {v_int})",
-                    (u_int + 10, v_int - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2,
-                )
+                label = f"ArUco #{marker_id} U:{u:.1f} V:{v:.1f}"
+                cv2.putText(display_frame, label, (u_int + 10, v_int - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         elif args.fiducial_type == "circle":
             center = detector.detect_circle_fiducial(frame)
             if center is not None:
-                u_int, v_int = int(round(center[0])), int(round(center[1]))
-                detected_centers.append(center)
+                u, v = center
+                u_int, v_int = int(round(u)), int(round(v))
+                detected_records.append({
+                    "id": 0,
+                    "pixel_u": round(u, 3),
+                    "pixel_v": round(v, 3),
+                })
                 cv2.circle(display_frame, (u_int, v_int), 8, (0, 255, 0), 2)
                 cv2.circle(display_frame, (u_int, v_int), 2, (0, 0, 255), -1)
-                cv2.putText(
-                    display_frame,
-                    f"Fiducial ({u_int}, {v_int})",
-                    (u_int + 10, v_int - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2,
-                )
+                label = f"Fiducial U:{u:.1f} V:{v:.1f}"
+                cv2.putText(display_frame, label, (u_int + 10, v_int - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # Status text overlay
-        cv2.putText(display_frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        cv2.putText(display_frame, f"Detected Markers: {len(detected_centers)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        cv2.putText(display_frame, "Press 'q' to quit | 's' to save screenshot", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        # Auto Focus Lock Feature: Once a fiducial is found, lock focus so it stays sharp
+        if args.auto_lock_focus and len(detected_records) > 0 and not focus_locked:
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+            focus_locked = True
+            autofocus_enabled = False
+            print("[CAMERA] Fiducial detected! Focus automatically locked.")
+
+        # Overlay status bar
+        focus_status = "LOCKED" if focus_locked else ("AUTO" if autofocus_enabled else f"MANUAL ({current_focus:.0f})")
+        cv2.putText(display_frame, f"FPS: {fps:.1f} | Focus: {focus_status}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(display_frame, f"Detected Fiducials: {len(detected_records)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(display_frame, "Keys: 's'=Save screenshot+coords | 'f'=Focus Lock | '['/']'=Focus Adj | 'q'=Quit", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
         try:
-            cv2.imshow("Vision Cutter - PC Camera Test", display_frame)
+            cv2.imshow("Vision Cutter - PC Camera & Focus Test", display_frame)
             key = cv2.waitKey(1) & 0xFF
+
             if key == ord('q'):
                 break
             elif key == ord('s'):
-                filename = f"camera_snapshot_{int(time.time())}.jpg"
-                cv2.imwrite(filename, frame)
-                print(f"Saved snapshot image to '{filename}'")
+                ts = int(time.time())
+                img_name = f"snapshot_coords_{ts}.jpg"
+                json_name = f"snapshot_coords_{ts}.json"
+
+                # 1. Save annotated frame with rendered pixel coordinates
+                cv2.imwrite(img_name, display_frame)
+
+                # 2. Save JSON sidecar with exact sub-pixel coordinates
+                metadata = {
+                    "timestamp": ts,
+                    "frame_width": w,
+                    "frame_height": h,
+                    "fiducial_type": args.fiducial_type,
+                    "focus_status": focus_status,
+                    "detections": detected_records,
+                }
+                with open(json_name, "w") as f:
+                    json.dump(metadata, f, indent=2)
+
+                print(f"\n[SAVED] Image: '{img_name}'")
+                print(f"[SAVED] Coordinates Metadata: '{json_name}'")
+                print(json.dumps(metadata, indent=2))
+
+            elif key == ord('f'):
+                autofocus_enabled = not autofocus_enabled
+                focus_locked = not autofocus_enabled
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1 if autofocus_enabled else 0)
+                print(f"[CAMERA] Autofocus set to {autofocus_enabled}")
+
+            elif key == ord('['):
+                current_focus = max(0.0, current_focus - 5.0)
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                cap.set(cv2.CAP_PROP_FOCUS, current_focus)
+                autofocus_enabled = False
+                focus_locked = True
+                print(f"[CAMERA] Manual focus adjusted to {current_focus}")
+
+            elif key == ord(']'):
+                current_focus = min(255.0, current_focus + 5.0)
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                cap.set(cv2.CAP_PROP_FOCUS, current_focus)
+                autofocus_enabled = False
+                focus_locked = True
+                print(f"[CAMERA] Manual focus adjusted to {current_focus}")
+
         except cv2.error:
-            # Headless OpenCV installed (opencv-python-headless)
-            snapshot_file = "camera_snapshot_headless.jpg"
-            cv2.imwrite(snapshot_file, display_frame)
-            print(f"\n[NOTE] OpenCV Headless detected (GUI window unavailable).")
-            print(f"Saved processed camera frame with detection overlays to '{snapshot_file}'.")
-            print("\nTo enable live video GUI window on PC, install full OpenCV:")
-            print("  pip uninstall opencv-python-headless -y")
-            print("  pip install opencv-python")
+            # Headless fallback
+            ts = int(time.time())
+            img_name = f"snapshot_coords_headless_{ts}.jpg"
+            json_name = f"snapshot_coords_headless_{ts}.json"
+            cv2.imwrite(img_name, display_frame)
+            metadata = {
+                "timestamp": ts,
+                "frame_width": w,
+                "frame_height": h,
+                "fiducial_type": args.fiducial_type,
+                "detections": detected_records,
+            }
+            with open(json_name, "w") as f:
+                json.dump(metadata, f, indent=2)
+            print(f"Saved snapshot '{img_name}' and metadata '{json_name}'.")
             break
 
     cap.release()

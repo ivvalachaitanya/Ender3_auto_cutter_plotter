@@ -206,3 +206,61 @@ class CameraClient:
             return frame
         finally:
             cap.release()
+
+    def set_camera_autofocus(self, enable: bool) -> bool:
+        """
+        Enable or disable hardware camera autofocus.
+
+        :param enable: True to enable autofocus, False to disable/lock focus
+        :return: True if property set successfully
+        """
+        if cv2 is None:
+            return False
+
+        cap = cv2.VideoCapture(self.camera_index)
+        if not cap.isOpened():
+            return False
+
+        try:
+            val = 1.0 if enable else 0.0
+            success = cap.set(cv2.CAP_PROP_AUTOFOCUS, val)
+            logger.info("Camera autofocus set to %s (success=%s)", enable, success)
+            return success
+        finally:
+            cap.release()
+
+    def set_camera_focus(self, focus_value: float) -> bool:
+        """
+        Set manual camera focus value.
+
+        :param focus_value: Manual focus setting (typically 0.0 to 255.0 depending on driver)
+        :return: True if property set successfully
+        """
+        if cv2 is None:
+            return False
+
+        cap = cv2.VideoCapture(self.camera_index)
+        if not cap.isOpened():
+            return False
+
+        try:
+            # Disable autofocus first for manual setting to take effect
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0.0)
+            success = cap.set(cv2.CAP_PROP_FOCUS, focus_value)
+            logger.info("Camera manual focus set to %.1f (success=%s)", focus_value, success)
+            return success
+        finally:
+            cap.release()
+
+    def trigger_autofocus_lock(self, settle_time: float = 1.0) -> bool:
+        """
+        Temporarily enable autofocus to let the lens settle on the fiducial, then lock focus.
+
+        :param settle_time: Time in seconds to allow autofocus to adjust before locking
+        :return: True if successful
+        """
+        logger.info("Triggering autofocus lock sequence...")
+        self.set_camera_autofocus(True)
+        time.sleep(settle_time)
+        return self.set_camera_autofocus(False)
+
