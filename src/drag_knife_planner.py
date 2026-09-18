@@ -35,29 +35,55 @@ class SVGParser:
             raise RuntimeError("svgpathtools is required for SVG parsing.")
 
     @staticmethod
-    def _get_scale_to_mm(svg_file: str) -> float:
+    def _get_page_height_and_scale(svg_file: str) -> Tuple[float, float]:
         """
-        Determine scale factor to convert SVG units to mm.
+        Determine SVG page height (mm) and scale factor to convert SVG units to mm.
+        """
+        scale = 25.4 / 96.0  # Default 96 dpi scaling
+        page_height_mm = 297.0  # Default A4 height
 
-        Standard SVG default resolution is often 96 dpi (1 inch = 25.4 mm -> 1 px = 0.264583 mm).
-        """
-        # Default 96 dpi scaling
-        return 25.4 / 96.0
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(svg_file)
+            root = tree.getroot()
 
-    def parse_svg_paths(self, svg_file: str) -> List[List[Tuple[float, float]]]:
+            viewbox = root.get('viewBox')
+            if viewbox:
+                parts = [float(p) for p in viewbox.replace(',', ' ').split()]
+                if len(parts) == 4:
+                    page_height_mm = parts[3]
+                    # If viewBox is in user units, calculate scale from height attribute if present
+                    height_str = root.get('height', '')
+                    if 'mm' in height_str:
+                        h_val = float(height_str.replace('mm', '').strip())
+                        scale = h_val / parts[3]
+
+        except Exception as e:
+            logger.warning("Could not parse SVG viewBox height: %s. Using default 297mm.", e)
+
+        return page_height_mm, scale
+
+    def parse_svg_paths(self, svg_file: str, flip_y: bool = True) -> List[List[Tuple[float, float]]]:
         """
-        Parse all vector paths in SVG file into discretized polylines (mm).
+        Parse vector paths in SVG file into discretized polylines (mm).
 
         :param svg_file: Path to SVG file
+        :param flip_y: If True, flips Y axis (SVG top-left to Printer Bed bottom-left)
         :return: List of contours, where each contour is a list of (x, y) tuples
         """
         paths, attributes = svgpathtools.svg2paths(svg_file)
-        scale = self._get_scale_to_mm(svg_file)
+        page_height_mm, scale = self._get_page_height_and_scale(svg_file)
 
         contours: List[List[Tuple[float, float]]] = []
 
-        for path in paths:
+        for path, attr in zip(paths, attributes):
             if len(path) == 0:
+                continue
+
+            # Skip paths that belong to fiducial/aruco markers or layer 'Print'
+            elem_id = str(attr.get('id', '')).lower()
+            if 'fiducial' in elem_id or 'aruco' in elem_id:
+                logger.info("Skipping fiducial marker path ID '%s' from cut list.", elem_id)
                 continue
 
             contour: List[Tuple[float, float]] = []
@@ -70,7 +96,8 @@ class SVGParser:
                     t = i / float(num_samples)
                     pt = segment.point(t)
                     x_mm = pt.real * scale
-                    y_mm = pt.imag * scale
+                    y_raw = pt.imag * scale
+                    y_mm = (page_height_mm - y_raw) if flip_y else y_raw
 
                     # Avoid redundant consecutive identical points
                     if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
@@ -79,7 +106,9 @@ class SVGParser:
             # Sample end point of last segment
             end_pt = path[-1].point(1.0)
             end_x = end_pt.real * scale
-            end_y = end_pt.imag * scale
+            end_y_raw = end_pt.imag * scale
+            end_y = (page_height_mm - end_y_raw) if flip_y else end_y_raw
+
             if not contour or (abs(contour[-1][0] - end_x) > 1e-4 or abs(contour[-1][1] - end_y) > 1e-4):
                 contour.append((end_x, end_y))
 
