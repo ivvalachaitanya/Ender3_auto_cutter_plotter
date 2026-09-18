@@ -16,7 +16,10 @@ import argparse
 import os
 import sys
 import time
+import warnings
 import numpy as np
+
+warnings.filterwarnings("ignore")
 
 # Add src package directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
@@ -129,18 +132,31 @@ def main():
         cv2.putText(display_frame, f"Detected Markers: {len(detected_centers)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         cv2.putText(display_frame, "Press 'q' to quit | 's' to save screenshot", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        cv2.imshow("Vision Cutter - PC Camera Test", display_frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
+        try:
+            cv2.imshow("Vision Cutter - PC Camera Test", display_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('s'):
+                filename = f"camera_snapshot_{int(time.time())}.jpg"
+                cv2.imwrite(filename, frame)
+                print(f"Saved snapshot image to '{filename}'")
+        except cv2.error:
+            # Headless OpenCV installed (opencv-python-headless)
+            snapshot_file = "camera_snapshot_headless.jpg"
+            cv2.imwrite(snapshot_file, display_frame)
+            print(f"\n[NOTE] OpenCV Headless detected (GUI window unavailable).")
+            print(f"Saved processed camera frame with detection overlays to '{snapshot_file}'.")
+            print("\nTo enable live video GUI window on PC, install full OpenCV:")
+            print("  pip uninstall opencv-python-headless -y")
+            print("  pip install opencv-python")
             break
-        elif key == ord('s'):
-            filename = f"camera_snapshot_{int(time.time())}.jpg"
-            cv2.imwrite(filename, frame)
-            print(f"Saved snapshot image to '{filename}'")
 
     cap.release()
-    cv2.destroyAllWindows()
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
     print("PC Camera test ended.")
 
 
