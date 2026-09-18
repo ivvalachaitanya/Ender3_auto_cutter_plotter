@@ -37,31 +37,34 @@ class SVGParser:
     @staticmethod
     def _get_page_height_and_scale(svg_file: str) -> Tuple[float, float]:
         """
-        Determine SVG page height (mm) and scale factor to convert SVG units to mm.
+        Determine SVG page height (mm) and scale factor (25.4 / 96.0) to convert Inkscape user unit px to mm.
         """
-        scale = 25.4 / 96.0  # Default 96 dpi scaling
-        page_height_mm = 297.0  # Default A4 height
+        px_to_mm_scale = 25.4 / 96.0  # Standard 96 dpi Inkscape user unit scaling (1 px = 0.264583 mm)
+        page_height_mm = 297.0  # Default A4 height (mm)
 
         try:
             import xml.etree.ElementTree as ET
             tree = ET.parse(svg_file)
             root = tree.getroot()
 
-            viewbox = root.get('viewBox')
-            if viewbox:
-                parts = [float(p) for p in viewbox.replace(',', ' ').split()]
-                if len(parts) == 4:
-                    page_height_mm = parts[3]
-                    # If viewBox is in user units, calculate scale from height attribute if present
-                    height_str = root.get('height', '')
-                    if 'mm' in height_str:
-                        h_val = float(height_str.replace('mm', '').strip())
-                        scale = h_val / parts[3]
+            # Check height attribute (e.g. height="297mm" or height="1122.52")
+            height_str = root.get('height', '')
+            if 'mm' in height_str:
+                page_height_mm = float(height_str.replace('mm', '').strip())
+            elif height_str:
+                val = float(height_str.replace('px', '').strip())
+                page_height_mm = val * px_to_mm_scale
+            else:
+                viewbox = root.get('viewBox')
+                if viewbox:
+                    parts = [float(p) for p in viewbox.replace(',', ' ').split()]
+                    if len(parts) == 4:
+                        page_height_mm = parts[3] * px_to_mm_scale
 
         except Exception as e:
-            logger.warning("Could not parse SVG viewBox height: %s. Using default 297mm.", e)
+            logger.warning("Could not parse SVG page height: %s. Using default 297mm.", e)
 
-        return page_height_mm, scale
+        return page_height_mm, px_to_mm_scale
 
     def parse_svg_paths(self, svg_file: str, flip_y: bool = True) -> List[List[Tuple[float, float]]]:
         """
