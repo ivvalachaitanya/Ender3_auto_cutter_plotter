@@ -115,18 +115,17 @@ def main():
                 label = f"ArUco #{marker_id} U:{u:.1f} V:{v:.1f}"
                 cv2.putText(display_frame, label, (u_int + 10, v_int - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         elif args.fiducial_type == "circle":
-            center = detector.detect_circle_fiducial(frame)
-            if center is not None:
-                u, v = center
+            circle_centers = detector.detect_all_circle_fiducials(frame)
+            for circle_idx, (u, v) in enumerate(circle_centers):
                 u_int, v_int = int(round(u)), int(round(v))
                 detected_records.append({
-                    "id": 0,
+                    "id": circle_idx,
                     "pixel_u": round(u, 3),
                     "pixel_v": round(v, 3),
                 })
                 cv2.circle(display_frame, (u_int, v_int), 8, (0, 255, 0), 2)
                 cv2.circle(display_frame, (u_int, v_int), 2, (0, 0, 255), -1)
-                label = f"Fiducial U:{u:.1f} V:{v:.1f}"
+                label = f"Fiducial #{circle_idx + 1} U:{u:.1f} V:{v:.1f}"
                 cv2.putText(display_frame, label, (u_int + 10, v_int - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # Calculate image sharpness score (Laplacian Variance)

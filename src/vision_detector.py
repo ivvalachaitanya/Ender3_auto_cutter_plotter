@@ -81,15 +81,15 @@ class FiducialDetector:
 
         return results
 
-    def detect_circle_fiducial(self, frame: np.ndarray, min_area: float = 15.0, max_area: float = 50000.0, min_circularity: float = 0.55) -> Optional[Tuple[float, float]]:
+    def detect_all_circle_fiducials(self, frame: np.ndarray, min_area: float = 15.0, max_area: float = 50000.0, min_circularity: float = 0.55) -> List[Tuple[float, float]]:
         """
-        Detect sub-pixel circular fiducial centroid in frame.
+        Detect ALL sub-pixel circular fiducial centroids in frame.
 
         :param frame: BGR or Grayscale frame image
-        :param min_area: Minimum contour area filter (default 15.0 px)
+        :param min_area: Minimum contour area filter
         :param max_area: Maximum contour area filter
-        :param min_circularity: Minimum circularity filter (4 * pi * area / perimeter^2)
-        :return: Tuple (u, v) pixel coordinate of center, or None if not found
+        :param min_circularity: Minimum circularity filter
+        :return: List of (u, v) sub-pixel pixel coordinate tuples for all detected circles
         """
         if frame is None or frame.size == 0:
             raise ValueError("Input frame is empty.")
@@ -99,12 +99,9 @@ class FiducialDetector:
 
         # Otsu thresholding
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        best_center = None
-        best_circularity = 0.0
-
+        centers = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < min_area or area > max_area:
@@ -115,26 +112,39 @@ class FiducialDetector:
                 continue
 
             circularity = 4 * np.pi * (area / (perimeter * perimeter))
-            if circularity >= min_circularity and circularity > best_circularity:
+            if circularity >= min_circularity:
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cx = M["m10"] / M["m00"]
                     cy = M["m01"] / M["m00"]
-                    best_center = (cx, cy)
-                    best_circularity = circularity
+                    centers.append(((cx, cy), circularity))
 
-        if best_center is not None:
-            # Refine centroid with sub-pixel precision
-            initial_pt = np.array([[[best_center[0], best_center[1]]]], dtype=np.float32)
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        if not centers:
+            logger.warning("No circular fiducials matching criteria detected.")
+            return []
+
+        # Sort by circularity descending
+        centers.sort(key=lambda item: item[1], reverse=True)
+
+        refined_centers = []
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+        for (cx, cy), circ in centers:
+            initial_pt = np.array([[[cx, cy]]], dtype=np.float32)
             refined_pt = cv2.cornerSubPix(gray, initial_pt, (5, 5), (-1, -1), criteria)
             refined_u = float(refined_pt[0][0][0])
             refined_v = float(refined_pt[0][0][1])
-            logger.info("Detected circular fiducial at sub-pixel (%.2f, %.2f) with circularity %.3f", refined_u, refined_v, best_circularity)
-            return refined_u, refined_v
+            refined_centers.append((refined_u, refined_v))
+            logger.info("Detected circular fiducial at sub-pixel (%.2f, %.2f) circularity=%.3f", refined_u, refined_v, circ)
 
-        logger.warning("No circular fiducial matching criteria detected.")
-        return None
+        return refined_centers
+
+    def detect_circle_fiducial(self, frame: np.ndarray, min_area: float = 15.0, max_area: float = 50000.0, min_circularity: float = 0.55) -> Optional[Tuple[float, float]]:
+        """
+        Detect single best sub-pixel circular fiducial centroid in frame.
+        """
+        all_centers = self.detect_all_circle_fiducials(frame, min_area=min_area, max_area=max_area, min_circularity=min_circularity)
+        return all_centers[0] if all_centers else None
 
     def detect(self, frame: np.ndarray, expected_id: Optional[int] = None) -> Optional[Tuple[float, float]]:
         """
