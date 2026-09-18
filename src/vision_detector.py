@@ -81,12 +81,12 @@ class FiducialDetector:
 
         return results
 
-    def detect_circle_fiducial(self, frame: np.ndarray, min_area: float = 100.0, max_area: float = 50000.0, min_circularity: float = 0.75) -> Optional[Tuple[float, float]]:
+    def detect_circle_fiducial(self, frame: np.ndarray, min_area: float = 15.0, max_area: float = 50000.0, min_circularity: float = 0.55) -> Optional[Tuple[float, float]]:
         """
         Detect sub-pixel circular fiducial centroid in frame.
 
         :param frame: BGR or Grayscale frame image
-        :param min_area: Minimum contour area filter
+        :param min_area: Minimum contour area filter (default 15.0 px)
         :param max_area: Maximum contour area filter
         :param min_circularity: Minimum circularity filter (4 * pi * area / perimeter^2)
         :return: Tuple (u, v) pixel coordinate of center, or None if not found
