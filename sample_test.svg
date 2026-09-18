@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="200mm" height="200mm" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Print & Cut Test SVG -->
+  <!-- Nominal Fiducials at (10, 10), (100, 10), and (10, 100) mm -->
+  <g id="fiducials" stroke="black" stroke-width="0.5" fill="none">
+    <!-- Circle Fiducial #1 (10, 10) -->
+    <circle cx="10" cy="10" r="3" fill="black" />
+    <!-- Circle Fiducial #2 (100, 10) -->
+    <circle cx="100" cy="10" r="3" fill="black" />
+    <!-- Circle Fiducial #3 (10, 100) -->
+    <circle cx="10" cy="100" r="3" fill="black" />
+  </g>
+
+  <!-- Cut Paths -->
+  <g id="cut_paths" stroke="red" stroke-width="0.5" fill="none">
+    <!-- Test Rectangle with Sharp 90-degree corners -->
+    <rect x="30" y="30" width="40" height="40" rx="0" ry="0" />
+    
+    <!-- Test Star Contour -->
+    <polygon points="130,30 135,45 150,45 138,55 142,70 130,60 118,70 122,55 110,45 125,45" />
+
+    <!-- Curved Cut Path -->
+    <path d="M 30,120 C 50,90 80,150 100,120 S 130,150 150,120" />
+  </g>
+</svg>
