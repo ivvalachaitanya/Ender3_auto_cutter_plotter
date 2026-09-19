@@ -64,7 +64,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <span class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold">1</span>
           <h3 class="font-semibold text-sm">Select SVG Artwork</h3>
         </div>
-        <input type="text" id="svg-file" value="Cut1.svg" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-mono">
+        <input type="text" id="svg-file" value="Cut.svg" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-mono">
         <button onclick="loadPreview()" class="w-full btn-primary py-2 text-xs">Load SVG Preview</button>
       </div>
 
@@ -225,8 +225,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/print-artwork":
             query = parse_qs(parsed.query)
-            filename = query.get("file", ["Cut1.svg"])[0]
-            filepath = os.path.join(WORKSPACE_DIR, filename)
+            filename = query.get("file", ["Cut.svg"])[0]
+
+            # If user loaded Cut1.svg (paths only), use Cut.svg (full color artwork) for printing if available!
+            if filename.lower() == "cut1.svg" and os.path.isfile(os.path.join(WORKSPACE_DIR, "Cut.svg")):
+                filepath = os.path.join(WORKSPACE_DIR, "Cut.svg")
+            else:
+                filepath = os.path.join(WORKSPACE_DIR, filename)
 
             if os.path.isfile(filepath):
                 try:
