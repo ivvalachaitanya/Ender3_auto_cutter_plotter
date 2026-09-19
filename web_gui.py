@@ -187,9 +187,31 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if os.path.isfile(filepath):
                 try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        svg_code = f.read()
-                    resp = {"status": "ok", "contours_count": 3, "svg_content": svg_code}
+                    # Import SVGParser to generate lightweight SVG vector paths
+                    sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+                    from drag_knife_planner import SVGParser
+
+                    parser_obj = SVGParser(step_size_mm=1.0)
+                    contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
+
+                    # Generate clean, lightweight HTML5 SVG string (under 5KB)
+                    svg_lines = ['<svg viewBox="0 0 210 297" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background:#020617; border-radius:8px;">']
+                    # Render page border
+                    svg_lines.append('<rect x="0" y="0" width="210" height="297" fill="none" stroke="#334155" stroke-width="1" />')
+                    # Render fiducial indicator boxes
+                    svg_lines.append('<rect x="10" y="10" width="10" height="10" fill="#10b981" />')
+                    svg_lines.append('<rect x="180" y="10" width="10" height="10" fill="#10b981" />')
+                    svg_lines.append('<rect x="10" y="250" width="10" height="10" fill="#10b981" />')
+
+                    # Render vector cut paths in red
+                    for contour in contours:
+                        pts_str = " ".join([f"{pt[0]:.2f},{pt[1]:.2f}" for pt in contour])
+                        svg_lines.append(f'<polyline points="{pts_str}" fill="none" stroke="#ef4444" stroke-width="0.8" stroke-dasharray="3,3" />')
+
+                    svg_lines.append('</svg>')
+                    clean_svg_code = "".join(svg_lines)
+
+                    resp = {"status": "ok", "contours_count": len(contours), "svg_content": clean_svg_code}
                 except Exception as e:
                     resp = {"status": "error", "message": str(e)}
             else:
