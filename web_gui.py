@@ -188,31 +188,28 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(HTML_PAGE.encode("utf-8"))
         elif parsed.path == "/api/preview":
             query = parse_qs(parsed.query)
-            filename = query.get("file", ["Cut1.svg"])[0]
-            filepath = os.path.join(WORKSPACE_DIR, filename)
+            filename = query.get("file", ["Cut.svg"])[0]
+
+            # Prefer Cut.svg (has color PNG artwork + cut paths) if available
+            if filename.lower() == "cut1.svg" and os.path.isfile(os.path.join(WORKSPACE_DIR, "Cut.svg")):
+                filepath = os.path.join(WORKSPACE_DIR, "Cut.svg")
+            else:
+                filepath = os.path.join(WORKSPACE_DIR, filename)
 
             if os.path.isfile(filepath):
                 try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        svg_code = f.read()
+
+                    # Wrap in CSS constrained container so full color artwork + cut paths render without hanging
+                    preview_html = f'<div style="width:100%; height:100%; max-height:300px; display:flex; justify-content:center; align-items:center; background:#ffffff; border-radius:8px; overflow:hidden; padding:4px;">{svg_code}</div>'
+
                     sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
                     from drag_knife_planner import SVGParser
-
                     parser_obj = SVGParser(step_size_mm=1.0)
                     contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
 
-                    svg_lines = ['<svg viewBox="0 0 210 297" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background:#020617; border-radius:8px;">']
-                    svg_lines.append('<rect x="0" y="0" width="210" height="297" fill="none" stroke="#334155" stroke-width="1" />')
-                    svg_lines.append('<rect x="10" y="10" width="10" height="10" fill="#10b981" />')
-                    svg_lines.append('<rect x="180" y="10" width="10" height="10" fill="#10b981" />')
-                    svg_lines.append('<rect x="10" y="250" width="10" height="10" fill="#10b981" />')
-
-                    for contour in contours:
-                        pts_str = " ".join([f"{pt[0]:.2f},{pt[1]:.2f}" for pt in contour])
-                        svg_lines.append(f'<polyline points="{pts_str}" fill="none" stroke="#ef4444" stroke-width="0.8" stroke-dasharray="3,3" />')
-
-                    svg_lines.append('</svg>')
-                    clean_svg_code = "".join(svg_lines)
-
-                    resp = {"status": "ok", "contours_count": len(contours), "svg_content": clean_svg_code}
+                    resp = {"status": "ok", "contours_count": len(contours), "svg_content": preview_html}
                 except Exception as e:
                     resp = {"status": "error", "message": str(e)}
             else:
@@ -227,7 +224,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             filename = query.get("file", ["Cut.svg"])[0]
 
-            # If user loaded Cut1.svg (paths only), use Cut.svg (full color artwork) for printing if available!
             if filename.lower() == "cut1.svg" and os.path.isfile(os.path.join(WORKSPACE_DIR, "Cut.svg")):
                 filepath = os.path.join(WORKSPACE_DIR, "Cut.svg")
             else:
@@ -243,11 +239,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
   <title>Print Sheet - {filename}</title>
   <style>
     @page {{ size: A4 portrait; margin: 0; }}
-    html, body {{ margin: 0; padding: 0; width: 210mm; height: 297mm; background: white; }}
+    html, body {{ margin: 0; padding: 0; width: 210mm; height: 297mm; background: white; display: flex; justify-content: center; align-items: center; }}
     svg {{ width: 210mm; height: 297mm; display: block; }}
   </style>
 </head>
-<body onload="setTimeout(function(){{ window.print(); }}, 500)">
+<body onload="setTimeout(function(){{ window.print(); }}, 600)">
   {svg_code}
 </body>
 </html>"""
