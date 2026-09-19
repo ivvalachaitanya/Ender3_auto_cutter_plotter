@@ -146,13 +146,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function openPrintWindow() {
       const file = document.getElementById('svg-file').value;
-      addLog(`Opening 1:1 scale print window for '${file}'...`);
+      addLog(`[PRINT] Sending full color artwork + ArUco fiducials of '${file}' to 2D Paper/Vinyl Printer at 1:1 scale...`);
       window.open(`/print-artwork?file=${file}`, '_blank');
     }
 
     function runScan() {
       const file = document.getElementById('svg-file').value;
-      addLog(`Starting camera alignment scan for '${file}'...`);
+      addLog(`[VISION] Jogging camera over Ender bed to scan ArUco fiducials for '${file}'...`);
       fetch(`/api/scan?file=${file}`, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
@@ -163,7 +163,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function runCut() {
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
-      addLog(`Sending cut job to Klipper (${dry})...`);
+      addLog(`[CUTTER] Stripping pixel images & sending ONLY vector cut paths (G-code) to Ender 3 machine...`);
       fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
