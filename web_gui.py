@@ -37,6 +37,14 @@ HTML_PAGE = """<!DOCTYPE html>
     .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 1rem; }
     .btn-primary { background-color: #10b981; color: white; border-radius: 0.5rem; font-weight: 600; }
     .btn-primary:hover { background-color: #059669; }
+    #svg-container svg {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto !important;
+      height: auto !important;
+      display: block;
+      margin: auto;
+    }
   </style>
 </head>
 <body class="p-6">
@@ -106,7 +114,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
       <div class="card p-4 md:col-span-2 space-y-3">
         <h3 class="text-sm font-semibold">SVG Vector & Cut-Path Preview</h3>
-        <div id="svg-container" class="w-full h-80 bg-slate-950 rounded border border-slate-800 flex items-center justify-center p-4">
+        <div id="svg-container" class="w-full h-[450px] bg-slate-950 rounded border border-slate-800 flex items-center justify-center p-3 overflow-hidden">
           <p class="text-slate-500 text-xs">Click 'Load SVG Preview' to render vector cut paths</p>
         </div>
       </div>
@@ -114,7 +122,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="card p-4 space-y-3 flex flex-col justify-between">
         <div>
           <h3 class="text-sm font-semibold mb-2">Real-time Pipeline Log</h3>
-          <div id="log-box" class="w-full h-64 bg-slate-950 rounded p-3 text-[11px] font-mono text-emerald-400 overflow-y-auto space-y-1 border border-slate-800">
+          <div id="log-box" class="w-full h-[450px] bg-slate-950 rounded p-3 text-[11px] font-mono text-emerald-400 overflow-y-auto space-y-1 border border-slate-800">
             <div>[INIT] Cutter Studio Web Server ready on port 5000</div>
           </div>
         </div>
@@ -201,8 +209,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     with open(filepath, "r", encoding="utf-8") as f:
                         svg_code = f.read()
 
-                    # Wrap in CSS constrained container so full color artwork + cut paths render without hanging
-                    preview_html = f'<div style="width:100%; height:100%; max-height:300px; display:flex; justify-content:center; align-items:center; background:#ffffff; border-radius:8px; overflow:hidden; padding:4px;">{svg_code}</div>'
+                    # Sanitize SVG: ensure any display:none on artwork images or layers is enabled on-the-fly
+                    svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
+
+                    # Wrap in CSS constrained container so full color artwork + cut paths scale to fit window without overflow
+                    preview_html = f'<div style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:#ffffff; border-radius:8px; overflow:hidden; padding:4px;">{svg_code_sanitized}</div>'
 
                     sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
                     from drag_knife_planner import SVGParser
@@ -233,6 +244,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         svg_code = f.read()
+                    svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
                     print_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -244,7 +256,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
   </style>
 </head>
 <body onload="setTimeout(function(){{ window.print(); }}, 600)">
-  {svg_code}
+  {svg_code_sanitized}
 </body>
 </html>"""
                     self.send_response(200)
