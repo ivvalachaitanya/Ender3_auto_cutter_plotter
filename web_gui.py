@@ -75,7 +75,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <h3 class="font-semibold text-sm">Print Artwork</h3>
         </div>
         <p class="text-xs text-slate-400">Send 1:1 scale design to your paper/vinyl color printer.</p>
-        <button onclick="window.print()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 rounded text-xs">🖨️ Print Sheet (1:1)</button>
+        <button onclick="openPrintWindow()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 rounded text-xs">🖨️ Print Sheet (1:1)</button>
       </div>
 
       <!-- Step 3 -->
@@ -144,6 +144,12 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    function openPrintWindow() {
+      const file = document.getElementById('svg-file').value;
+      addLog(`Opening 1:1 scale print window for '${file}'...`);
+      window.open(`/print-artwork?file=${file}`, '_blank');
+    }
+
     function runScan() {
       const file = document.getElementById('svg-file').value;
       addLog(`Starting camera alignment scan for '${file}'...`);
@@ -187,23 +193,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if os.path.isfile(filepath):
                 try:
-                    # Import SVGParser to generate lightweight SVG vector paths
                     sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
                     from drag_knife_planner import SVGParser
 
                     parser_obj = SVGParser(step_size_mm=1.0)
                     contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
 
-                    # Generate clean, lightweight HTML5 SVG string (under 5KB)
                     svg_lines = ['<svg viewBox="0 0 210 297" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background:#020617; border-radius:8px;">']
-                    # Render page border
                     svg_lines.append('<rect x="0" y="0" width="210" height="297" fill="none" stroke="#334155" stroke-width="1" />')
-                    # Render fiducial indicator boxes
                     svg_lines.append('<rect x="10" y="10" width="10" height="10" fill="#10b981" />')
                     svg_lines.append('<rect x="180" y="10" width="10" height="10" fill="#10b981" />')
                     svg_lines.append('<rect x="10" y="250" width="10" height="10" fill="#10b981" />')
 
-                    # Render vector cut paths in red
                     for contour in contours:
                         pts_str = " ".join([f"{pt[0]:.2f},{pt[1]:.2f}" for pt in contour])
                         svg_lines.append(f'<polyline points="{pts_str}" fill="none" stroke="#ef4444" stroke-width="0.8" stroke-dasharray="3,3" />')
@@ -218,6 +219,44 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 resp = {"status": "error", "message": f"File '{filename}' not found."}
 
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/print-artwork":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut1.svg"])[0]
+            filepath = os.path.join(WORKSPACE_DIR, filename)
+
+            if os.path.isfile(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        svg_code = f.read()
+                    print_html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <title>Print Sheet - {filename}</title>
+  <style>
+    @page {{ size: A4 portrait; margin: 0; }}
+    html, body {{ margin: 0; padding: 0; width: 210mm; height: 297mm; background: white; }}
+    svg {{ width: 210mm; height: 297mm; display: block; }}
+  </style>
+</head>
+<body onload="setTimeout(function(){{ window.print(); }}, 500)">
+  {svg_code}
+</body>
+</html>"""
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(print_html.encode("utf-8"))
+                    return
+                except Exception as e:
+                    resp = {"status": "error", "message": str(e)}
+            else:
+                resp = {"status": "error", "message": f"File '{filename}' not found."}
+
+            self.send_response(404)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))
