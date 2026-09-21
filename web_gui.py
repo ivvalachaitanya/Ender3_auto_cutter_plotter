@@ -681,12 +681,50 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     bed_w = cfg.get("bed_width_mm", 210.0)
                     bed_h = cfg.get("bed_height_mm", 297.0)
 
-                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:2px;">
-                      <div style="font-size:11px; font-family:monospace; color:#38bdf8; margin-bottom:4px; font-weight:600;">
-                        🛏️ Printable Bed Canvas: {bed_w:.0f}mm × {bed_h:.0f}mm
+                    import re
+                    w_match = re.search(r'width=["\']([0-9.]+)(mm|px)?["\']', svg_code)
+                    h_match = re.search(r'height=["\']([0-9.]+)(mm|px)?["\']', svg_code)
+                    vb_match = re.search(r'viewBox=["\']([0-9.\s,-]+)["\']', svg_code)
+
+                    svg_w = float(w_match.group(1)) if w_match else 210.0
+                    svg_h = float(h_match.group(1)) if h_match else 297.0
+
+                    if vb_match:
+                        vb_parts = [float(x) for x in re.split(r'[\s,]+', vb_match.group(1).strip()) if x]
+                        if len(vb_parts) == 4:
+                            if not w_match:
+                                svg_w = vb_parts[2]
+                            if not h_match:
+                                svg_h = vb_parts[3]
+
+                    w_pct = min(100.0, (svg_w / bed_w) * 100.0)
+                    h_pct = min(100.0, (svg_h / bed_h) * 100.0)
+                    exceeds = (svg_w > bed_w) or (svg_h > bed_h)
+
+                    badge_exceeds = "<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.2); color:#f87171; border:1px solid rgba(239, 68, 68, 0.3); font-size:10px;'>⚠️ Sheet Exceeds Bed</span>" if exceeds else ""
+
+                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#0b0f19; user-select:none;">
+                      <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px;">
+                        <span style="padding:2px 8px; border-radius:4px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3); font-weight:600;">
+                          🛏️ Bed: {bed_w:.0f}×{bed_h:.0f} mm
+                        </span>
+                        <span style="padding:2px 8px; border-radius:4px; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3); font-weight:600;">
+                          📄 Sheet: {svg_w:.0f}×{svg_h:.0f} mm
+                        </span>
+                        {badge_exceeds}
                       </div>
-                      <div style="aspect-ratio:{bed_w}/{bed_h}; max-width:95%; max-height:85%; background:#ffffff; border:2px solid #0284c7; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.5); overflow:hidden; display:flex; justify-content:center; align-items:center; padding:2px;">
-                        {svg_code_sanitized}
+
+                      <!-- Ender 3 Physical Bed Cutting Mat Grid -->
+                      <div style="aspect-ratio:{bed_w}/{bed_h}; width:100%; max-width:92%; max-height:82%; background:#131d31; border:2px solid #334155; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.6); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start;">
+                        
+                        <!-- Grid Lines Overlay -->
+                        <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(71, 85, 105, 0.3) 1px, transparent 1px), linear-gradient(to bottom, rgba(71, 85, 105, 0.3) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
+                        <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#64748b; background:rgba(15,23,42,0.8); padding:1px 4px; border-radius:2px; pointer-events:none;">(0,0) Bed Origin</div>
+
+                        <!-- White Printable Sheet / Working Area -->
+                        <div style="width:{w_pct:.2f}%; height:{h_pct:.2f}%; background:#ffffff; box-shadow:0 4px 16px rgba(0,0,0,0.6); position:relative; overflow:hidden; display:flex; justify-content:center; align-items:center; border:1px solid #94a3b8;">
+                          {svg_code_sanitized}
+                        </div>
                       </div>
                     </div>'''
 
