@@ -7,7 +7,7 @@ Provides:
 1. Load SVG & preview cut paths / fiducials.
 2. One-click 1:1 scale printing to paper/vinyl color printer.
 3. Live Camera Feed & Interactive ArUco Fiducial Scanning window.
-4. Camera selection dropdown (USB cameras, Klipper Crowsnest stream, Mock stream).
+4. Auto-Scan (ArUco) or Manual Jog Mode (Crosshair Target Alignment).
 5. Hardware Calibration Settings Modal (Bed size, Blade offset, Camera offsets, Z depths, Feedrates).
 6. One-click G-code upload & Vinyl Cut execution on Klipper/Moonraker.
 
@@ -145,9 +145,10 @@ class CameraStreamer:
 
         # Draw optical center target reticle
         cu, cv = w // 2, h // 2
-        cv2.line(frame, (cu - 20, cv), (cu + 20, cv), (255, 180, 0), 1)
-        cv2.line(frame, (cu, cv - 20), (cu, cv + 20), (255, 180, 0), 1)
-        cv2.circle(frame, (cu, cv), 5, (255, 180, 0), 1)
+        cv2.line(frame, (cu - 25, cv), (cu + 25, cv), (0, 255, 255), 1)
+        cv2.line(frame, (cu, cv - 25), (cu, cv + 25), (0, 255, 255), 1)
+        cv2.circle(frame, (cu, cv), 6, (0, 255, 255), 1)
+        cv2.circle(frame, (cu, cv), 2, (0, 0, 255), -1)
 
         # Simulate small camera pan/jitter
         dx = int(5 * math.sin(frame_num * 0.1))
@@ -166,7 +167,7 @@ class CameraStreamer:
         cv2.circle(frame, (m1_u, m1_v), 3, (0, 0, 255), -1)
 
         # Status text overlay
-        cv2.putText(frame, "SIMULATED MOCK CAMERA FEED (30 FPS)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 1)
+        cv2.putText(frame, "SIMULATED CAMERA FEED (CROSSHAIR TARGET ON)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1)
         cv2.putText(frame, f"Frame: #{frame_num} | Focus Score: 142.5 VAR", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
         return frame
@@ -179,10 +180,11 @@ class CameraStreamer:
         h, w = frame.shape[:2]
         cu, cv = w // 2, h // 2
 
-        # Optical center crosshairs
-        cv2.line(frame, (cu - 20, cv), (cu + 20, cv), (255, 180, 0), 1)
-        cv2.line(frame, (cu, cv - 20), (cu, cv + 20), (255, 180, 0), 1)
-        cv2.circle(frame, (cu, cv), 5, (255, 180, 0), 1)
+        # Optical center target reticle (High Contrast Yellow/Red)
+        cv2.line(frame, (cu - 25, cv), (cu + 25, cv), (0, 255, 255), 1)
+        cv2.line(frame, (cu, cv - 25), (cu, cv + 25), (0, 255, 255), 1)
+        cv2.circle(frame, (cu, cv), 6, (0, 255, 255), 1)
+        cv2.circle(frame, (cu, cv), 2, (0, 0, 255), -1)
 
         # Focus score
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
@@ -278,13 +280,21 @@ HTML_PAGE = """<!DOCTYPE html>
 
       <!-- Step 3 -->
       <div class="card p-4 space-y-3">
-        <div class="flex items-center space-x-2">
-          <span class="w-6 h-6 rounded-full bg-purple-500 text-white flex items-center justify-center text-xs font-bold">3</span>
-          <h3 class="font-semibold text-sm">Scan & Align</h3>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="w-6 h-6 rounded-full bg-purple-500 text-white flex items-center justify-center text-xs font-bold">3</span>
+            <h3 class="font-semibold text-sm">Scan & Align</h3>
+          </div>
+          <!-- Alignment Mode Toggle -->
+          <div class="flex rounded-lg bg-slate-900 p-0.5 border border-slate-700 text-[10px]">
+            <button id="mode-auto-btn" onclick="setAlignMode('auto')" class="px-2 py-0.5 rounded font-semibold bg-purple-600 text-white shadow">⚡ Auto</button>
+            <button id="mode-manual-btn" onclick="setAlignMode('manual')" class="px-2 py-0.5 rounded font-semibold text-slate-400 hover:text-white">🎮 Manual</button>
+          </div>
         </div>
+
         <div>
           <div class="flex justify-between items-center mb-1">
-            <label class="text-[11px] text-slate-400">Select Camera Source:</label>
+            <label class="text-[11px] text-slate-400">Camera Source:</label>
             <button onclick="refreshCameras()" class="text-[10px] text-purple-400 hover:underline">🔄 Refresh</button>
           </div>
           <select id="camera-select" onchange="switchCameraStream()" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-purple-300 font-mono">
@@ -294,7 +304,46 @@ HTML_PAGE = """<!DOCTYPE html>
             <option value="mock">Mock Virtual Feed</option>
           </select>
         </div>
-        <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs">📷 Scan Fiducials</button>
+
+        <!-- Auto Mode Controls -->
+        <div id="auto-align-controls" class="space-y-2">
+          <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Auto-Scan ArUco Fiducials</button>
+        </div>
+
+        <!-- Manual Mode Controls (Hidden by Default) -->
+        <div id="manual-align-controls" class="space-y-2.5 hidden">
+          <div class="bg-slate-900/90 p-2 rounded border border-slate-800 space-y-2">
+            <div class="text-[11px] font-semibold text-purple-300 text-center">🎮 Manual D-Pad Jogging</div>
+            <!-- D-Pad -->
+            <div class="grid grid-cols-3 gap-1 w-32 mx-auto text-center">
+              <div></div>
+              <button onclick="jog('Y', 1)" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1 rounded text-xs font-bold shadow">▲ Y+</button>
+              <div></div>
+              <button onclick="jog('X', -1)" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1 rounded text-xs font-bold shadow">◀ X-</button>
+              <button onclick="jogHome()" class="bg-slate-700 hover:bg-slate-600 text-amber-400 py-1 rounded text-[10px] font-bold shadow" title="Home X/Y Gantry">🏠</button>
+              <button onclick="jog('X', 1)" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1 rounded text-xs font-bold shadow">X+ ▶</button>
+              <div></div>
+              <button onclick="jog('Y', -1)" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1 rounded text-xs font-bold shadow">▼ Y-</button>
+              <div></div>
+            </div>
+            <!-- Step Size -->
+            <div class="flex justify-center space-x-1 text-[10px] items-center pt-1">
+              <span class="text-slate-400">Step:</span>
+              <button onclick="setStep(0.1)" id="step-01" class="px-1.5 py-0.5 rounded bg-purple-600 text-white font-mono">0.1mm</button>
+              <button onclick="setStep(1.0)" id="step-1" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">1.0mm</button>
+              <button onclick="setStep(10.0)" id="step-10" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">10mm</button>
+            </div>
+          </div>
+
+          <!-- Lock Fiducial Marks -->
+          <div class="space-y-1 text-[10px]">
+            <button onclick="lockMark(0)" id="mark-0-btn" class="w-full bg-slate-800 hover:bg-slate-700 text-emerald-400 py-1 rounded border border-slate-700 font-mono">📌 Lock Mark #0 (Top-Left)</button>
+            <button onclick="lockMark(1)" id="mark-1-btn" class="w-full bg-slate-800 hover:bg-slate-700 text-emerald-400 py-1 rounded border border-slate-700 font-mono">📌 Lock Mark #1 (Top-Right)</button>
+            <button onclick="lockMark(2)" id="mark-2-btn" class="w-full bg-slate-800 hover:bg-slate-700 text-emerald-400 py-1 rounded border border-slate-700 font-mono">📌 Lock Mark #2 (Bottom-Left)</button>
+          </div>
+
+          <button onclick="solveManualAlignment()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-1.5 rounded text-xs shadow">📐 Solve & Save 2D Affine Matrix</button>
+        </div>
       </div>
 
       <!-- Step 4 -->
@@ -443,10 +492,97 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <script>
+    let currentStepSize = 1.0;
+    let manualLockedPoints = [null, null, null];
+
     function addLog(msg) {
       const box = document.getElementById('log-box');
       box.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
       box.scrollTop = box.scrollHeight;
+    }
+
+    function setAlignMode(mode) {
+      const autoBtn = document.getElementById('mode-auto-btn');
+      const manualBtn = document.getElementById('mode-manual-btn');
+      const autoCtrl = document.getElementById('auto-align-controls');
+      const manualCtrl = document.getElementById('manual-align-controls');
+
+      if (mode === 'auto') {
+        autoBtn.className = "px-2 py-0.5 rounded font-semibold bg-purple-600 text-white shadow";
+        manualBtn.className = "px-2 py-0.5 rounded font-semibold text-slate-400 hover:text-white";
+        autoCtrl.classList.remove('hidden');
+        manualCtrl.classList.add('hidden');
+        addLog('Switched to Automatic (ArUco) Alignment Mode.');
+      } else {
+        manualBtn.className = "px-2 py-0.5 rounded font-semibold bg-purple-600 text-white shadow";
+        autoBtn.className = "px-2 py-0.5 rounded font-semibold text-slate-400 hover:text-white";
+        manualCtrl.classList.remove('hidden');
+        autoCtrl.classList.add('hidden');
+        addLog('Switched to Manual Camera Jog (Crosshair Target) Alignment Mode.');
+      }
+    }
+
+    function setStep(val) {
+      currentStepSize = val;
+      ['01', '1', '10'].forEach(id => {
+        const btn = document.getElementById('step-' + id);
+        btn.className = "px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono";
+      });
+      const activeId = val === 0.1 ? '01' : (val === 1.0 ? '1' : '10');
+      document.getElementById('step-' + activeId).className = "px-1.5 py-0.5 rounded bg-purple-600 text-white font-mono";
+    }
+
+    function jog(axis, dir) {
+      const dist = dir * currentStepSize;
+      addLog(`[JOG] Moving ${axis} by ${dist > 0 ? '+' : ''}${dist} mm...`);
+      fetch(`/api/jog?axis=${axis}&dist=${dist}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          addLog(data.message);
+          if (data.position) {
+            addLog(`Toolhead Position: X=${data.position[0].toFixed(2)}, Y=${data.position[1].toFixed(2)}, Z=${data.position[2].toFixed(2)}`);
+          }
+        });
+    }
+
+    function jogHome() {
+      addLog('[JOG] Homing X and Y gantries...');
+      fetch(`/api/jog?axis=HOME&dist=0`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => addLog(data.message));
+    }
+
+    function lockMark(idx) {
+      fetch('/api/toolhead_position')
+        .then(r => r.json())
+        .then(data => {
+          const pos = data.position || [10.0 + idx * 90.0, 10.0, 5.0];
+          manualLockedPoints[idx] = [pos[0], pos[1]];
+          const btn = document.getElementById(`mark-${idx}-btn`);
+          btn.className = "w-full bg-emerald-950/80 text-emerald-400 py-1 rounded border border-emerald-500/50 font-mono font-bold";
+          btn.textContent = `✅ Mark #${idx} Locked (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`;
+          addLog(`[MANUAL] Locked Registration Mark #${idx} at X=${pos[0].toFixed(2)} mm, Y=${pos[1].toFixed(2)} mm.`);
+        });
+    }
+
+    function solveManualAlignment() {
+      if (!manualLockedPoints[0] || !manualLockedPoints[1] || !manualLockedPoints[2]) {
+        addLog('[ERROR] Please jog to and lock all 3 registration marks before solving alignment.');
+        return;
+      }
+      addLog('[MANUAL] Solving 2D Affine Transformation Matrix from 3 locked points...');
+      fetch('/api/manual_lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          actual: manualLockedPoints,
+          nominal: [[15.0, 15.0], [195.0, 15.0], [15.0, 282.0]]
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        addLog(data.message);
+      });
     }
 
     function openSettingsModal() {
@@ -591,7 +727,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 class WebRequestHandler(BaseHTTPRequestHandler):
-    """HTTP Handler for Cricut Web GUI with MJPEG Camera Streaming and Settings Management."""
+    """HTTP Handler for Cricut Web GUI with MJPEG Camera Streaming, Settings, and Manual Jog Alignment."""
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -610,6 +746,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/cameras":
             cams = camera_streamer.enumerate_cameras()
             resp = {"status": "ok", "cameras": cams}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif parsed.path == "/api/toolhead_position":
+            cfg = load_config()
+            moon_url = cfg.get("moonraker_url", "http://localhost:7125")
+            try:
+                sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+                from moonraker_client import MoonrakerClient
+                client = MoonrakerClient(base_url=moon_url)
+                if client.is_connected():
+                    pos = client.get_toolhead_position()
+                    resp = {"status": "ok", "position": list(pos)}
+                else:
+                    resp = {"status": "ok", "position": [15.0, 15.0, 5.0]}
+            except Exception:
+                resp = {"status": "ok", "position": [15.0, 15.0, 5.0]}
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -833,6 +988,76 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     resp = {"status": "error", "message": "Failed to save settings file."}
             except Exception as e:
                 resp = {"status": "error", "message": str(e)}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/jog":
+            axis = query.get("axis", ["X"])[0].upper()
+            dist = float(query.get("dist", ["1.0"])[0])
+            cfg = load_config()
+            moon_url = cfg.get("moonraker_url", "http://localhost:7125")
+
+            try:
+                sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+                from moonraker_client import MoonrakerClient
+                client = MoonrakerClient(base_url=moon_url)
+                if axis == "HOME":
+                    success = client.send_gcode("G28 X Y")
+                    msg = "Homed X and Y gantries."
+                else:
+                    gcode = f"G91\nG0 {axis}{dist:+.3f} F3000\nG90"
+                    success = client.send_gcode(gcode)
+                    msg = f"Jogged {axis} {dist:+.1f}mm."
+
+                pos = client.get_toolhead_position() if success else (0.0, 0.0, 0.0)
+                resp = {"status": "ok" if success else "error", "message": msg, "position": list(pos)}
+            except Exception as e:
+                resp = {"status": "ok", "message": f"[MOCK JOG] {axis} {dist:+.1f}mm executed."}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/manual_lock":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_body.decode("utf-8"))
+                actual_pts = np.array(data.get("actual", []), dtype=np.float64)
+                nominal_pts = np.array(data.get("nominal", [[15.0, 15.0], [195.0, 15.0], [15.0, 282.0]]), dtype=np.float64)
+
+                if len(actual_pts) < 3:
+                    resp = {"status": "error", "message": "Please lock all 3 registration marks before solving alignment."}
+                elif cv2 is not None:
+                    matrix, inliers = cv2.estimateAffinePartial2D(nominal_pts, actual_pts)
+                    if matrix is not None:
+                        a, b, tx = matrix[0, 0], matrix[0, 1], matrix[0, 2]
+                        scale = math.sqrt(a * a + b * b)
+                        angle_rad = math.atan2(b, a)
+                        angle_deg = math.degrees(angle_rad)
+                        ty = matrix[1, 2]
+
+                        affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+                        with open(affine_file, "w", encoding="utf-8") as f:
+                            json.dump({
+                                "matrix": matrix.tolist(),
+                                "scale": scale,
+                                "rotation_deg": angle_deg,
+                                "translation_mm": [tx, ty]
+                            }, f, indent=2)
+
+                        msg = f"[MANUAL ALIGNMENT] Solved 2D Affine Matrix! Scale={scale:.4f}, Rotation={angle_deg:+.2f}°, Tx={tx:+.2f}mm, Ty={ty:+.2f}mm."
+                        resp = {"status": "ok", "message": msg}
+                    else:
+                        resp = {"status": "error", "message": "Failed to compute 2D Affine Matrix from manual points."}
+                else:
+                    resp = {"status": "ok", "message": "Manual points locked."}
+            except Exception as err:
+                resp = {"status": "error", "message": str(err)}
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
