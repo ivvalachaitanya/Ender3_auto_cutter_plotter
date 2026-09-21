@@ -502,6 +502,7 @@ HTML_PAGE = """<!DOCTYPE html>
         if (data.status === 'ok') {
           addLog('[SETTINGS] Calibration parameters updated and saved to config.json!');
           closeSettingsModal();
+          loadPreview();
         } else {
           addLog('[ERROR] Failed to save settings: ' + data.message);
         }
@@ -676,7 +677,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     # Sanitize SVG: ensure any display:none on artwork images or layers is enabled on-the-fly
                     svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
 
-                    preview_html = f'<div style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:#ffffff; border-radius:8px; overflow:hidden; padding:4px;">{svg_code_sanitized}</div>'
+                    cfg = load_config()
+                    bed_w = cfg.get("bed_width_mm", 210.0)
+                    bed_h = cfg.get("bed_height_mm", 297.0)
+
+                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:2px;">
+                      <div style="font-size:11px; font-family:monospace; color:#38bdf8; margin-bottom:4px; font-weight:600;">
+                        🛏️ Printable Bed Canvas: {bed_w:.0f}mm × {bed_h:.0f}mm
+                      </div>
+                      <div style="aspect-ratio:{bed_w}/{bed_h}; max-width:95%; max-height:85%; background:#ffffff; border:2px solid #0284c7; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.5); overflow:hidden; display:flex; justify-content:center; align-items:center; padding:2px;">
+                        {svg_code_sanitized}
+                      </div>
+                    </div>'''
 
                     sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
                     from drag_knife_planner import SVGParser
