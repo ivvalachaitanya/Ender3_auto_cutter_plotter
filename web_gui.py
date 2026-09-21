@@ -8,7 +8,8 @@ Provides:
 2. One-click 1:1 scale printing to paper/vinyl color printer.
 3. Live Camera Feed & Interactive ArUco Fiducial Scanning window.
 4. Camera selection dropdown (USB cameras, Klipper Crowsnest stream, Mock stream).
-5. One-click G-code upload & Vinyl Cut execution on Klipper/Moonraker.
+5. Hardware Calibration Settings Modal (Bed size, Blade offset, Camera offsets, Z depths, Feedrates).
+6. One-click G-code upload & Vinyl Cut execution on Klipper/Moonraker.
 
 Usage:
     python web_gui.py --port 5000
@@ -33,7 +34,50 @@ except ImportError:
 
 PORT = 5000
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(WORKSPACE_DIR, "config.json")
 sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+
+DEFAULT_CONFIG = {
+    "bed_width_mm": 210.0,
+    "bed_height_mm": 297.0,
+    "blade_offset_mm": 0.35,
+    "camera_offset_x_mm": -25.0,
+    "camera_offset_y_mm": 0.0,
+    "mm_per_pixel": 0.05,
+    "z_safe_mm": 5.0,
+    "z_cut_mm": 0.0,
+    "f_cut_mm_min": 1200.0,
+    "f_travel_mm_min": 3000.0,
+    "moonraker_url": "http://localhost:7125",
+    "crowsnest_url": "http://localhost:8080/?action=stream",
+}
+
+
+def load_config():
+    """Load configuration from config.json or return defaults."""
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                config = DEFAULT_CONFIG.copy()
+                config.update(data)
+                return config
+        except Exception as e:
+            print("[WARN] Failed to load config.json:", e)
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(new_config):
+    """Save configuration dictionary to config.json."""
+    config = load_config()
+    config.update(new_config)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        return True
+    except Exception as e:
+        print("[ERROR] Failed to save config.json:", e)
+        return False
 
 
 class CameraStreamer:
@@ -69,11 +113,13 @@ class CameraStreamer:
                 except Exception:
                     pass
 
+        cfg = load_config()
+        crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
         cameras.append({
             "id": "crowsnest",
-            "name": "Klipper Crowsnest Stream (Port 8080)",
+            "name": f"Klipper Crowsnest Stream ({crowsnest_url})",
             "type": "mjpeg",
-            "url": "http://localhost:8080/?action=stream"
+            "url": crowsnest_url
         })
         cameras.append({
             "id": "mock",
@@ -200,9 +246,11 @@ HTML_PAGE = """<!DOCTYPE html>
           <p class="text-xs text-slate-400">Autonomous Computer-Vision Print & Cut Web Application</p>
         </div>
       </div>
-      <div class="flex space-x-3">
-        <span class="px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">● Klipper Server Online (7125)</span>
-        <span class="px-3 py-1 rounded-full text-xs bg-blue-500/20 text-blue-400 border border-blue-500/30">● Crowsnest Stream Online (8080)</span>
+      <div class="flex items-center space-x-3">
+        <span class="px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">● Klipper Online (7125)</span>
+        <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold flex items-center space-x-1.5 shadow transition-all hover:border-slate-500">
+          <span>⚙️ Hardware Settings</span>
+        </button>
       </div>
     </div>
 
@@ -296,11 +344,168 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Settings Calibration Modal -->
+  <div id="settings-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="card max-w-2xl w-full p-6 space-y-6 border-slate-700 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+        <div class="flex items-center space-x-2">
+          <span class="text-xl">⚙️</span>
+          <h2 class="text-lg font-bold">Hardware Calibration & Settings</h2>
+        </div>
+        <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+      </div>
+
+      <!-- Form Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+        <!-- Bed Calibration -->
+        <div class="space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+          <h4 class="font-semibold text-emerald-400 border-b border-slate-800 pb-1">🛏️ Printable Bed Size</h4>
+          <div>
+            <label class="text-slate-400 block mb-1">Bed Width (mm):</label>
+            <input type="number" id="cfg-bed-width" step="1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Bed Height (mm):</label>
+            <input type="number" id="cfg-bed-height" step="1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+        </div>
+
+        <!-- Drag Knife Calibration -->
+        <div class="space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+          <h4 class="font-semibold text-rose-400 border-b border-slate-800 pb-1">🔪 Drag Knife Blade</h4>
+          <div>
+            <label class="text-slate-400 block mb-1">Roland Blade Offset (mm):</label>
+            <input type="number" id="cfg-blade-offset" step="0.01" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            <span class="text-[10px] text-slate-500">Standard Roland 45° blade offset is 0.35 mm</span>
+          </div>
+        </div>
+
+        <!-- Camera Calibration -->
+        <div class="space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+          <h4 class="font-semibold text-purple-400 border-b border-slate-800 pb-1">📷 Camera Offsets (Rel to Knife Tip)</h4>
+          <div>
+            <label class="text-slate-400 block mb-1">Camera Offset X (mm):</label>
+            <input type="number" id="cfg-cam-offset-x" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Camera Offset Y (mm):</label>
+            <input type="number" id="cfg-cam-offset-y" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Camera Scale (mm / pixel):</label>
+            <input type="number" id="cfg-mm-px" step="0.001" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+        </div>
+
+        <!-- Z Depths & Feedrates -->
+        <div class="space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+          <h4 class="font-semibold text-blue-400 border-b border-slate-800 pb-1">⚡ Motion & Z Depths</h4>
+          <div>
+            <label class="text-slate-400 block mb-1">Safe Z Travel Height (mm):</label>
+            <input type="number" id="cfg-z-safe" step="0.5" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Cut Z Depth (mm):</label>
+            <input type="number" id="cfg-z-cut" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Cutting Feedrate (mm/min):</label>
+            <input type="number" id="cfg-f-cut" step="50" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Travel Feedrate (mm/min):</label>
+            <input type="number" id="cfg-f-travel" step="100" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+        </div>
+
+        <!-- Connections -->
+        <div class="md:col-span-2 space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+          <h4 class="font-semibold text-amber-400 border-b border-slate-800 pb-1">🌐 Network Connections</h4>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-slate-400 block mb-1">Moonraker Server URL:</label>
+              <input type="text" id="cfg-moonraker-url" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]">
+            </div>
+            <div>
+              <label class="text-slate-400 block mb-1">Crowsnest Stream URL:</label>
+              <input type="text" id="cfg-crowsnest-url" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="flex justify-end space-x-3 border-t border-slate-700 pt-4">
+        <button onclick="closeSettingsModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold">Cancel</button>
+        <button onclick="saveSettings()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-lg">💾 Save Settings & Apply</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     function addLog(msg) {
       const box = document.getElementById('log-box');
       box.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
       box.scrollTop = box.scrollHeight;
+    }
+
+    function openSettingsModal() {
+      fetch('/api/settings')
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'ok') {
+            const cfg = data.settings;
+            document.getElementById('cfg-bed-width').value = cfg.bed_width_mm;
+            document.getElementById('cfg-bed-height').value = cfg.bed_height_mm;
+            document.getElementById('cfg-blade-offset').value = cfg.blade_offset_mm;
+            document.getElementById('cfg-cam-offset-x').value = cfg.camera_offset_x_mm;
+            document.getElementById('cfg-cam-offset-y').value = cfg.camera_offset_y_mm;
+            document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
+            document.getElementById('cfg-z-safe').value = cfg.z_safe_mm;
+            document.getElementById('cfg-z-cut').value = cfg.z_cut_mm;
+            document.getElementById('cfg-f-cut').value = cfg.f_cut_mm_min;
+            document.getElementById('cfg-f-travel').value = cfg.f_travel_mm_min;
+            document.getElementById('cfg-moonraker-url').value = cfg.moonraker_url;
+            document.getElementById('cfg-crowsnest-url').value = cfg.crowsnest_url;
+            document.getElementById('settings-modal').classList.remove('hidden');
+          }
+        });
+    }
+
+    function closeSettingsModal() {
+      document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    function saveSettings() {
+      const newCfg = {
+        bed_width_mm: parseFloat(document.getElementById('cfg-bed-width').value),
+        bed_height_mm: parseFloat(document.getElementById('cfg-bed-height').value),
+        blade_offset_mm: parseFloat(document.getElementById('cfg-blade-offset').value),
+        camera_offset_x_mm: parseFloat(document.getElementById('cfg-cam-offset-x').value),
+        camera_offset_y_mm: parseFloat(document.getElementById('cfg-cam-offset-y').value),
+        mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
+        z_safe_mm: parseFloat(document.getElementById('cfg-z-safe').value),
+        z_cut_mm: parseFloat(document.getElementById('cfg-z-cut').value),
+        f_cut_mm_min: parseFloat(document.getElementById('cfg-f-cut').value),
+        f_travel_mm_min: parseFloat(document.getElementById('cfg-f-travel').value),
+        moonraker_url: document.getElementById('cfg-moonraker-url').value,
+        crowsnest_url: document.getElementById('cfg-crowsnest-url').value,
+      };
+
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newCfg)
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          addLog('[SETTINGS] Calibration parameters updated and saved to config.json!');
+          closeSettingsModal();
+        } else {
+          addLog('[ERROR] Failed to save settings: ' + data.message);
+        }
+      });
     }
 
     function refreshCameras() {
@@ -385,7 +590,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 class WebRequestHandler(BaseHTTPRequestHandler):
-    """HTTP Handler for Cricut Web GUI with MJPEG Camera Streaming."""
+    """HTTP Handler for Cricut Web GUI with MJPEG Camera Streaming and Settings Management."""
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -394,6 +599,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode("utf-8"))
+        elif parsed.path == "/api/settings":
+            cfg = load_config()
+            resp = {"status": "ok", "settings": cfg}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
         elif parsed.path == "/api/cameras":
             cams = camera_streamer.enumerate_cameras()
             resp = {"status": "ok", "cameras": cams}
@@ -530,11 +742,29 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
-        filename = query.get("file", ["Cut1.svg"])[0]
-        cam_source = query.get("camera", ["0"])[0]
-        dry_flag = query.get("dry", [""])[0]
 
-        if parsed.path == "/api/scan" or parsed.path == "/api/cut":
+        if parsed.path == "/api/settings":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_body.decode("utf-8"))
+                if save_config(data):
+                    resp = {"status": "ok", "message": "Settings saved successfully."}
+                else:
+                    resp = {"status": "error", "message": "Failed to save settings file."}
+            except Exception as e:
+                resp = {"status": "error", "message": str(e)}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/scan" or parsed.path == "/api/cut":
+            filename = query.get("file", ["Cut1.svg"])[0]
+            cam_source = query.get("camera", ["0"])[0]
+            dry_flag = query.get("dry", [""])[0]
+
             cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
             if cam_source.isdigit():
                 cmd.extend(["--camera-index", cam_source])

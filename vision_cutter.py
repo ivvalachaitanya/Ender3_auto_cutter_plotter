@@ -38,20 +38,30 @@ def parse_args():
         description="Autonomous Computer-Vision Print & Cut Vinyl Cutting Pipeline for Ender 3 (Klipper)."
     )
 
+    # Load defaults from config.json if available
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    cfg = {}
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+
     # Required / Input files
     parser.add_argument("--svg", type=str, required=True, help="Path to input SVG file containing cut paths.")
     parser.add_argument("--output", type=str, default="print_and_cut_output.gcode", help="Output G-code file path.")
 
     # Hardware & Network Settings
-    parser.add_argument("--moonraker-url", type=str, default="http://localhost:7125", help="Moonraker server URL.")
-    parser.add_argument("--crowsnest-url", type=str, default="http://localhost:8080/?action=snapshot", help="Crowsnest camera snapshot URL.")
+    parser.add_argument("--moonraker-url", type=str, default=cfg.get("moonraker_url", "http://localhost:7125"), help="Moonraker server URL.")
+    parser.add_argument("--crowsnest-url", type=str, default=cfg.get("crowsnest_url", "http://localhost:8080/?action=stream"), help="Crowsnest camera snapshot URL.")
     parser.add_argument("--camera-index", type=int, default=0, help="Local OpenCV camera index fallback.")
 
     # Camera & Tool Calibration Parameters
-    parser.add_argument("--camera-offset-x", type=float, default=-25.0, help="Camera X offset relative to knife tip (mm).")
-    parser.add_argument("--camera-offset-y", type=float, default=0.0, help="Camera Y offset relative to knife tip (mm).")
-    parser.add_argument("--mm-per-pixel", type=float, default=0.05, help="Camera scale calibration factor (mm/pixel).")
-    parser.add_argument("--blade-offset", type=float, default=0.35, help="Drag knife blade offset (mm).")
+    parser.add_argument("--camera-offset-x", type=float, default=cfg.get("camera_offset_x_mm", -25.0), help="Camera X offset relative to knife tip (mm).")
+    parser.add_argument("--camera-offset-y", type=float, default=cfg.get("camera_offset_y_mm", 0.0), help="Camera Y offset relative to knife tip (mm).")
+    parser.add_argument("--mm-per-pixel", type=float, default=cfg.get("mm_per_pixel", 0.05), help="Camera scale calibration factor (mm/pixel).")
+    parser.add_argument("--blade-offset", type=float, default=cfg.get("blade_offset_mm", 0.35), help="Drag knife blade offset (mm).")
 
     # Vision & Fiducials
     parser.add_argument("--fiducial-type", type=str, choices=["aruco", "circle"], default="aruco", help="Type of fiducial markers.")
@@ -63,10 +73,10 @@ def parse_args():
     )
 
     # Cutting Parameters
-    parser.add_argument("--z-safe", type=float, default=5.0, help="Safe travel Z height (mm).")
-    parser.add_argument("--z-cut", type=float, default=0.0, help="Cutting Z depth (mm).")
-    parser.add_argument("--f-cut", type=float, default=1200.0, help="Cutting feedrate (mm/min).")
-    parser.add_argument("--f-travel", type=float, default=3000.0, help="Travel feedrate (mm/min).")
+    parser.add_argument("--z-safe", type=float, default=cfg.get("z_safe_mm", 5.0), help="Safe travel Z height (mm).")
+    parser.add_argument("--z-cut", type=float, default=cfg.get("z_cut_mm", 0.0), help="Cutting Z depth (mm).")
+    parser.add_argument("--f-cut", type=float, default=cfg.get("f_cut_mm_min", 1200.0), help="Cutting feedrate (mm/min).")
+    parser.add_argument("--f-travel", type=float, default=cfg.get("f_travel_mm_min", 3000.0), help="Travel feedrate (mm/min).")
 
     # Execution flags
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
