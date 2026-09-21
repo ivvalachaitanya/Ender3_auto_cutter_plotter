@@ -697,14 +697,35 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             if not h_match:
                                 svg_h = vb_parts[3]
 
-                    w_pct = min(100.0, (svg_w / bed_w) * 100.0)
-                    h_pct = min(100.0, (svg_h / bed_h) * 100.0)
-                    exceeds = (svg_w > bed_w) or (svg_h > bed_h)
+                    # Bounding total viewport encompassing BOTH Bed and Sheet at 1:1 physical scale
+                    total_w = max(bed_w, svg_w)
+                    total_h = max(bed_h, svg_h)
 
-                    badge_exceeds = "<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.2); color:#f87171; border:1px solid rgba(239, 68, 68, 0.3); font-size:10px;'>⚠️ Sheet Exceeds Bed</span>" if exceeds else ""
+                    bed_w_pct = (bed_w / total_w) * 100.0
+                    bed_h_pct = (bed_h / total_h) * 100.0
 
-                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#0b0f19; user-select:none;">
-                      <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px;">
+                    sheet_w_pct = (svg_w / total_w) * 100.0
+                    sheet_h_pct = (svg_h / total_h) * 100.0
+
+                    exceeds_w = svg_w > bed_w
+                    exceeds_h = svg_h > bed_h
+                    exceeds = exceeds_w or exceeds_h
+
+                    diff_h = max(0.0, svg_h - bed_h)
+                    diff_w = max(0.0, svg_w - bed_w)
+
+                    badge_exceeds = ""
+                    if exceeds:
+                        ex_msg = []
+                        if exceeds_w:
+                            ex_msg.append(f"+{diff_w:.0f}mm X")
+                        if exceeds_h:
+                            ex_msg.append(f"+{diff_h:.0f}mm Y")
+                        badge_exceeds = f"<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.25); color:#f87171; border:1px solid rgba(239, 68, 68, 0.4); font-size:10px; font-weight:bold;'>⚠️ Exceeds Bed ({', '.join(ex_msg)})</span>"
+
+                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#090d16; user-select:none;">
+                      <!-- Dimension Status Header -->
+                      <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px; z-index:10;">
                         <span style="padding:2px 8px; border-radius:4px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3); font-weight:600;">
                           🛏️ Bed: {bed_w:.0f}×{bed_h:.0f} mm
                         </span>
@@ -714,17 +735,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         {badge_exceeds}
                       </div>
 
-                      <!-- Ender 3 Physical Bed Cutting Mat Grid -->
-                      <div style="aspect-ratio:{bed_w}/{bed_h}; width:100%; max-width:92%; max-height:82%; background:#131d31; border:2px solid #334155; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.6); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start;">
-                        
-                        <!-- Grid Lines Overlay -->
-                        <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(71, 85, 105, 0.3) 1px, transparent 1px), linear-gradient(to bottom, rgba(71, 85, 105, 0.3) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
-                        <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#64748b; background:rgba(15,23,42,0.8); padding:1px 4px; border-radius:2px; pointer-events:none;">(0,0) Bed Origin</div>
+                      <!-- Total Viewport Container holding Bed + Sheet at 1:1 Physical Scale -->
+                      <div style="aspect-ratio:{total_w}/{total_h}; width:100%; max-width:92%; max-height:82%; background:#050811; border:1px solid #1e293b; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.7); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start; padding:0;">
 
-                        <!-- White Printable Sheet / Working Area -->
-                        <div style="width:{w_pct:.2f}%; height:{h_pct:.2f}%; background:#ffffff; box-shadow:0 4px 16px rgba(0,0,0,0.6); position:relative; overflow:hidden; display:flex; justify-content:center; align-items:center; border:1px solid #94a3b8;">
-                          {svg_code_sanitized}
+                        <!-- 1. Physical Printer Bed Box -->
+                        <div style="position:absolute; top:0; left:0; width:{bed_w_pct:.2f}%; height:{bed_h_pct:.2f}%; background:#111827; border:2px solid #3b82f6; border-radius:4px; box-sizing:border-box; z-index:1; overflow:hidden;">
+                          <!-- Grid Pattern Overlay -->
+                          <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(59, 130, 246, 0.15) 1px, transparent 1px), linear-gradient(to bottom, rgba(59, 130, 246, 0.15) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
+                          <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#60a5fa; background:rgba(15,23,42,0.85); padding:1px 4px; border-radius:2px; pointer-events:none; z-index:5;">(0,0) Bed Origin</div>
                         </div>
+
+                        <!-- 2. SVG Paper Sheet (True 1:1 Scale) -->
+                        <div style="position:absolute; top:0; left:0; width:{sheet_w_pct:.2f}%; height:{sheet_h_pct:.2f}%; background:#ffffff; box-shadow:0 4px 16px rgba(0,0,0,0.6); z-index:2; display:flex; justify-content:center; align-items:center; border:1px solid #cbd5e1; overflow:hidden;">
+                          {svg_code_sanitized}
+
+                          <!-- Red Hazard Overlay for portion exceeding bed Y/X limit -->
+                          {"<div style='position:absolute; top:" + f"{(bed_h_pct / sheet_h_pct * 100.0):.2f}" + "%; bottom:0; left:0; right:0; background:rgba(239, 68, 68, 0.35); border-top:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE PRINTABLE BED (+" + f"{diff_h:.0f}mm EXCEEDED)</div>" if exceeds_h else ""}
+                          {"<div style='position:absolute; left:" + f"{(bed_w_pct / sheet_w_pct * 100.0):.2f}" + "%; right:0; top:0; bottom:0; background:rgba(239, 68, 68, 0.35); border-left:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE BED</div>" if (exceeds_w and not exceeds_h) else ""}
+                        </div>
+
                       </div>
                     </div>'''
 
