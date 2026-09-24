@@ -1,0 +1,30 @@
+{
+  "profile_name": "Creality Ender 3 Gen 1 (Vinyl Cutter & Plotter)",
+  "machine": {
+    "name": "Ender 3 Gen 1",
+    "firmware": "Klipper / Marlin",
+    "bed_width_mm": 220.0,
+    "bed_height_mm": 220.0,
+    "bed_shape": "rectangular",
+    "origin_location": "lower-left",
+    "units": "mm"
+  },
+  "tool": {
+    "type": "drag_knife",
+    "blade_offset_mm": 0.35,
+    "swivel_angle_threshold_deg": 30.0,
+    "overcut_mm": 0.5
+  },
+  "speeds_and_feeds": {
+    "cut_feedrate_mm_min": 1200.0,
+    "travel_feedrate_mm_min": 3000.0,
+    "z_safe_mm": 5.0,
+    "z_cut_mm": 0.0
+  },
+  "gcode_postprocessor": {
+    "start_gcode": "; --- Ender 3 Gen 1 PolyCut Start G-code ---\nG90 ; Absolute positioning\nG28 X Y ; Home X and Y axes\nG0 Z5.0 F3000 ; Lift blade to Safe Z height",
+    "end_gcode": "; --- Ender 3 Gen 1 PolyCut End G-code ---\nG90 ; Absolute positioning\nG0 Z10.0 F3000 ; Lift blade to safe height\nG0 X0 Y220 F3000 ; Present finished vinyl sheet to front",
+    "strip_heating_commands": true,
+    "strip_extruder_moves": true
+  }
+}

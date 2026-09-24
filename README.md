@@ -170,6 +170,31 @@ python vision_cutter.py --svg samples/Cut.svg --mock
 
 ---
 
+## ⚙️ PolyCut / JScut Profile for Creality Ender 3 Gen 1
+
+Because PolyCut lacks a built-in pre-set profile for Creality Ender 3 Gen 1, use the pre-configured profile included in [`samples/ender3_gen1_polycut_profile.json`](file:///C:/Users/chait/.gemini/antigravity/scratch/Ender3_auto_cutter_plotter/samples/ender3_gen1_polycut_profile.json) or enter these settings into PolyCut:
+
+- **Bed Dimensions:** $220\text{ mm} \times 220\text{ mm}$ (Rectangular, Lower-Left Origin)
+- **Blade Offset:** $0.35\text{ mm}$ (Roland 45° Standard Blade)
+- **Safe Z Travel:** $5.0\text{ mm}$
+- **Plunge Cut Z:** $0.0\text{ mm}$
+- **Cut Feedrate:** $1200\text{ mm/min}$ ($20\text{ mm/s}$)
+- **Travel Feedrate:** $3000\text{ mm/min}$ ($50\text{ mm/s}$)
+- **Start G-code Header:**
+  ```gcode
+  G90 ; Absolute positioning
+  G28 X Y ; Home X and Y axes
+  G0 Z5.0 F3000 ; Lift blade to Safe Z height
+  ```
+- **End G-code Footer:**
+  ```gcode
+  G90 ; Absolute positioning
+  G0 Z10.0 F3000 ; Lift blade to safe height
+  G0 X0 Y220 F3000 ; Present finished sheet to front
+  ```
+
+---
+
 ## ⚙️ Recommended Klipper `printer.cfg` Settings
 
 Ensure `printer.cfg` includes arc support for smooth drag-knife swivel moves:
