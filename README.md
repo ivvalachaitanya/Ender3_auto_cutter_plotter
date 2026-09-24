@@ -104,7 +104,7 @@ Open **`http://localhost:5000`** in your web browser.
 3. **Step 3: Scan & Align:**
    - **⚡ Auto Mode:** Click **`📷 Auto-Scan ArUco Fiducials`** for automatic vision detection.
    - **🎮 Manual Mode:** Use the interactive D-Pad to jog the camera crosshairs over registration marks #0, #1, #2, click **`📌 Lock Mark`**, and solve the 2D Affine Matrix.
-4. **Step 4: Cut Vinyl:** Set your **Dry Run** preference and click **`🚀 START VINYL CUT`** to execute the job on Klipper!
+4. **Step 4: Cut Vinyl & Bounding Box Framing:** Click **`🔲 Trace Bounding Box (Frame)`** to trace the 4 outer corners at Safe Z ($Z=5.0\text{ mm}$) to verify material placement, set your **Dry Run** preference, and click **`🚀 START VINYL CUT`** to execute the job on Klipper!
 
 ---
 

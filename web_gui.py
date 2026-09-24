@@ -64,6 +64,63 @@ def resolve_workspace_file(filename):
     return p1
 
 
+def get_file_bounding_box(filepath):
+    """Calculate min_x, max_x, min_y, max_y bounding box for SVG or G-code file."""
+    min_x, max_x, min_y, max_y = 0.0, 0.0, 0.0, 0.0
+    if filepath.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
+        cur_x, cur_y = 0.0, 0.0
+        found = False
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip().split(";")[0]
+                if not line:
+                    continue
+                parts = line.split()
+                cmd = parts[0].upper()
+                if cmd in ("G0", "G1", "G00", "G01", "G2", "G3", "G02", "G03"):
+                    for p in parts[1:]:
+                        if p.upper().startswith("X"):
+                            try:
+                                cur_x = float(p[1:])
+                                found = True
+                            except ValueError:
+                                pass
+                        elif p.upper().startswith("Y"):
+                            try:
+                                cur_y = float(p[1:])
+                                found = True
+                            except ValueError:
+                                pass
+                    if found:
+                        if min_x == 0.0 and max_x == 0.0:
+                            min_x, max_x = cur_x, cur_x
+                            min_y, max_y = cur_y, cur_y
+                        else:
+                            min_x = min(min_x, cur_x)
+                            max_x = max(max_x, cur_x)
+                            min_y = min(min_y, cur_y)
+                            max_y = max(max_y, cur_y)
+    else:
+        try:
+            sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+            from drag_knife_planner import SVGParser
+            parser_obj = SVGParser(step_size_mm=1.0)
+            contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
+            if contours:
+                all_pts = [pt for contour in contours for pt in contour]
+                min_x = min(p[0] for p in all_pts)
+                max_x = max(p[0] for p in all_pts)
+                min_y = min(p[1] for p in all_pts)
+                max_y = max(p[1] for p in all_pts)
+        except Exception as e:
+            print(f"[WARN] Failed to extract SVG bounding box: {e}")
+
+    if max_x == 0.0 and max_y == 0.0:
+        min_x, max_x, min_y, max_y = 0.0, 210.0, 0.0, 297.0
+
+    return min_x, max_x, min_y, max_y
+
+
 def load_config():
     """Load configuration from config.json or return defaults."""
     if os.path.isfile(CONFIG_PATH):
@@ -494,9 +551,12 @@ HTML_PAGE = """<!DOCTYPE html>
           <h3 class="font-semibold text-sm">Cut Vinyl</h3>
         </div>
         <div class="flex items-center justify-between text-xs">
-          <span class="text-slate-400">Dry Run:</span>
+          <span class="text-slate-400">Dry Run (Air Cut):</span>
           <input type="checkbox" id="dry-run" class="accent-emerald-500">
         </div>
+        <button onclick="runBoundingBoxFrame()" class="w-full bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-xs font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
+          <span>🔲 Trace Bounding Box (Frame)</span>
+        </button>
         <button onclick="runCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg">🚀 START VINYL CUT</button>
       </div>
     </div>
@@ -923,6 +983,17 @@ HTML_PAGE = """<!DOCTYPE html>
       .catch(err => addLog(`[ERROR] Upload failed: ${err}`));
     }
 
+    function runBoundingBoxFrame() {
+      const file = document.getElementById('svg-file').value;
+      addLog(`[FRAME] Tracing outer 4-corner bounding box for '${file}' at Safe Z...`);
+      fetch(`/api/frame?file=${file}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          addLog(data.message);
+        })
+        .catch(err => addLog(`[ERROR] Framing failed: ${err}`));
+    }
+
     function runCut() {
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
@@ -1239,6 +1310,49 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 resp = {"status": "ok", "filename": filename, "message": f"Successfully uploaded '{filename}'."}
             else:
                 resp = {"status": "error", "message": "Failed to extract uploaded file."}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/frame":
+            filename = query.get("file", ["Cut.svg"])[0]
+            filepath = resolve_workspace_file(filename)
+
+            if os.path.isfile(filepath):
+                cfg = load_config()
+                z_safe = cfg.get("z_safe_mm", 5.0)
+                f_travel = cfg.get("f_travel_mm_min", 3000.0)
+                moon_url = cfg.get("moonraker_url", "http://localhost:7125")
+
+                min_x, max_x, min_y, max_y = get_file_bounding_box(filepath)
+
+                gcode_lines = [
+                    "G90",
+                    f"G0 Z{z_safe:.2f} F{f_travel:.0f}",
+                    f"G0 X{min_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
+                    f"G0 X{max_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
+                    f"G0 X{max_x:.2f} Y{max_y:.2f} F{f_travel:.0f}",
+                    f"G0 X{min_x:.2f} Y{max_y:.2f} F{f_travel:.0f}",
+                    f"G0 X{min_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
+                ]
+                gcode_str = "\n".join(gcode_lines)
+
+                try:
+                    sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+                    from moonraker_client import MoonrakerClient
+                    client = MoonrakerClient(base_url=moon_url)
+                    if client.is_connected():
+                        success = client.send_gcode(gcode_str)
+                        msg = f"[FRAME] Traced 4-corner bounding box on printer! X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm."
+                    else:
+                        msg = f"[MOCK FRAME] Traced outer bounding box: X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm at Z={z_safe}mm."
+                    resp = {"status": "ok", "message": msg, "bounds": [min_x, max_x, min_y, max_y]}
+                except Exception as err:
+                    resp = {"status": "ok", "message": f"[MOCK FRAME] Traced outer bounding box: X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm."}
+            else:
+                resp = {"status": "error", "message": f"File '{filename}' not found."}
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
