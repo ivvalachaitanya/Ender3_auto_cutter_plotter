@@ -80,6 +80,115 @@ def save_config(new_config):
         return False
 
 
+def render_gcode_preview_html(filepath, bed_w=210.0, bed_h=297.0):
+    """Parse G-code moves and return rendered HTML bed mat preview with travel/cut paths."""
+    cur_x, cur_y = 0.0, 0.0
+    min_x, max_x = 0.0, 0.0
+    min_y, max_y = 0.0, 0.0
+    travel_moves = []
+    cut_moves = []
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip().split(";")[0]
+                if not line:
+                    continue
+                parts = line.split()
+                cmd = parts[0].upper()
+                if cmd in ("G0", "G1", "G00", "G01", "G2", "G3", "G02", "G03"):
+                    new_x, new_y = cur_x, cur_y
+                    is_move = False
+                    for p in parts[1:]:
+                        if p.upper().startswith("X"):
+                            try:
+                                new_x = float(p[1:])
+                                is_move = True
+                            except ValueError:
+                                pass
+                        elif p.upper().startswith("Y"):
+                            try:
+                                new_y = float(p[1:])
+                                is_move = True
+                            except ValueError:
+                                pass
+                    if is_move:
+                        if cmd in ("G0", "G00"):
+                            travel_moves.append((cur_x, cur_y, new_x, new_y))
+                        else:
+                            cut_moves.append((cur_x, cur_y, new_x, new_y))
+                        cur_x, cur_y = new_x, new_y
+                        min_x = min(min_x, cur_x)
+                        max_x = max(max_x, cur_x)
+                        min_y = min(min_y, cur_y)
+                        max_y = max(max_y, cur_y)
+    except Exception as e:
+        print(f"[WARN] G-code preview parse error: {e}")
+
+    gc_w = max(max_x, 10.0)
+    gc_h = max(max_y, 10.0)
+
+    total_w = max(bed_w, gc_w)
+    total_h = max(bed_h, gc_h)
+
+    bed_w_pct = (bed_w / total_w) * 100.0
+    bed_h_pct = (bed_h / total_h) * 100.0
+    sheet_w_pct = (gc_w / total_w) * 100.0
+    sheet_h_pct = (gc_h / total_h) * 100.0
+
+    exceeds_w = gc_w > bed_w
+    exceeds_h = gc_h > bed_h
+    exceeds = exceeds_w or exceeds_h
+    diff_h = max(0.0, gc_h - bed_h)
+    diff_w = max(0.0, gc_w - bed_w)
+
+    travel_d = " ".join(f"M {x1:.2f},{y1:.2f} L {x2:.2f},{y2:.2f}" for x1, y1, x2, y2 in travel_moves)
+    cut_d = " ".join(f"M {x1:.2f},{y1:.2f} L {x2:.2f},{y2:.2f}" for x1, y1, x2, y2 in cut_moves)
+
+    svg_content = f'''<svg viewBox="0 0 {gc_w:.2f} {gc_h:.2f}" style="width:100%; height:100%; max-width:100%; max-height:100%;">
+      <g transform="scale(1, -1) translate(0, -{gc_h:.2f})">
+        <path d="{travel_d}" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="2,2" fill="none" opacity="0.6"/>
+        <path d="{cut_d}" stroke="#10b981" stroke-width="1.2" fill="none"/>
+      </g>
+    </svg>'''
+
+    badge_exceeds = ""
+    if exceeds:
+        ex_msg = []
+        if exceeds_w:
+            ex_msg.append(f"+{diff_w:.0f}mm X")
+        if exceeds_h:
+            ex_msg.append(f"+{diff_h:.0f}mm Y")
+        badge_exceeds = f"<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.25); color:#f87171; border:1px solid rgba(239, 68, 68, 0.4); font-size:10px; font-weight:bold;'>⚠️ Exceeds Bed ({', '.join(ex_msg)})</span>"
+
+    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#090d16; user-select:none;">
+      <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px; z-index:10;">
+        <span style="padding:2px 8px; border-radius:4px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3); font-weight:600;">
+          🛏️ Bed: {bed_w:.0f}×{bed_h:.0f} mm
+        </span>
+        <span style="padding:2px 8px; border-radius:4px; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3); font-weight:600;">
+          ⚙️ PolyCut G-code: {gc_w:.0f}×{gc_h:.0f} mm
+        </span>
+        {badge_exceeds}
+      </div>
+
+      <div style="aspect-ratio:{total_w}/{total_h}; width:100%; max-width:92%; max-height:82%; background:#050811; border:1px solid #1e293b; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.7); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start; padding:0;">
+        <div style="position:absolute; top:0; left:0; width:{bed_w_pct:.2f}%; height:{bed_h_pct:.2f}%; background:#111827; border:2px solid #3b82f6; border-radius:4px; box-sizing:border-box; z-index:1; overflow:hidden;">
+          <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(59, 130, 246, 0.15) 1px, transparent 1px), linear-gradient(to bottom, rgba(59, 130, 246, 0.15) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
+          <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#60a5fa; background:rgba(15,23,42,0.85); padding:1px 4px; border-radius:2px; pointer-events:none; z-index:5;">(0,0) Bed Origin</div>
+        </div>
+
+        <div style="position:absolute; top:0; left:0; width:{sheet_w_pct:.2f}%; height:{sheet_h_pct:.2f}%; background:#0b132b; box-shadow:0 4px 16px rgba(0,0,0,0.6); z-index:2; display:flex; justify-content:center; align-items:center; border:1px solid #334155; overflow:hidden;">
+          {svg_content}
+          {"<div style='position:absolute; top:" + f"{(bed_h_pct / sheet_h_pct * 100.0):.2f}" + "%; bottom:0; left:0; right:0; background:rgba(239, 68, 68, 0.35); border-top:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE PRINTABLE BED (+" + f"{diff_h:.0f}mm EXCEEDED)</div>" if exceeds_h else ""}
+          {"<div style='position:absolute; left:" + f"{(bed_w_pct / sheet_w_pct * 100.0):.2f}" + "%; right:0; top:0; bottom:0; background:rgba(239, 68, 68, 0.35); border-left:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE BED</div>" if (exceeds_w and not exceeds_h) else ""}
+        </div>
+      </div>
+    </div>'''
+
+    return len(cut_moves), preview_html
+
+
 class CameraStreamer:
     """Helper class to enumerate, capture, annotate, and stream camera feeds."""
 
@@ -262,20 +371,41 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="card p-4 space-y-3">
         <div class="flex items-center space-x-2">
           <span class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold">1</span>
-          <h3 class="font-semibold text-sm">Select SVG Artwork</h3>
+          <h3 class="font-semibold text-sm">Select Cut File</h3>
         </div>
-        <input type="text" id="svg-file" value="Cut.svg" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-mono">
-        <button onclick="loadPreview()" class="w-full btn-primary py-2 text-xs">Load SVG Preview</button>
+        <select id="svg-file" onchange="onFileSelectionChanged()" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-mono">
+          <option value="Cut.svg">Cut.svg</option>
+        </select>
+        <div class="grid grid-cols-2 gap-2 text-[10px]">
+          <button onclick="loadFileList()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 py-1.5 rounded border border-slate-700 font-semibold flex items-center justify-center space-x-1 shadow">
+            <span>📁 Workspace</span>
+          </button>
+          <button onclick="document.getElementById('file-upload-input').click()" class="bg-emerald-700 hover:bg-emerald-600 text-white py-1.5 rounded font-semibold flex items-center justify-center space-x-1 shadow">
+            <span>📤 Choose File</span>
+          </button>
+          <input type="file" id="file-upload-input" onchange="uploadSelectedFile()" accept=".svg,.gcode,.nc,.gc,.tap" class="hidden">
+        </div>
+        <button onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
       </div>
 
       <!-- Step 2 -->
       <div class="card p-4 space-y-3">
         <div class="flex items-center space-x-2">
           <span class="w-6 h-6 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold">2</span>
-          <h3 class="font-semibold text-sm">Print Artwork</h3>
+          <h3 class="font-semibold text-sm">Print / Prep Sheet</h3>
         </div>
-        <p class="text-xs text-slate-400">Send 1:1 scale design to your paper/vinyl color printer.</p>
-        <button onclick="openPrintWindow()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 rounded text-xs">🖨️ Print Sheet (1:1)</button>
+        <div id="step2-svg-mode" class="space-y-2">
+          <p class="text-xs text-slate-400">Send 1:1 scale design with fiducials to color printer.</p>
+          <button onclick="openPrintWindow()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 rounded text-xs shadow">🖨️ Print Sheet (1:1)</button>
+        </div>
+        <div id="step2-gcode-mode" class="space-y-2 hidden">
+          <div class="bg-blue-950/60 border border-blue-800/80 p-2 rounded text-xs space-y-1">
+            <div class="font-semibold text-blue-300 flex items-center space-x-1">
+              <span>⚙️ PolyCut G-code Ready</span>
+            </div>
+            <p class="text-[10px] text-slate-400">Toolpath file selected. Proceed to camera alignment or cutting.</p>
+          </div>
+        </div>
       </div>
 
       <!-- Step 3 -->
@@ -704,10 +834,88 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    function onFileSelectionChanged() {
+      const file = document.getElementById('svg-file').value;
+      const isGcode = file.toLowerCase().match(/\.(gcode|nc|gc|tap)$/);
+      const svgMode = document.getElementById('step2-svg-mode');
+      const gcodeMode = document.getElementById('step2-gcode-mode');
+      if (isGcode) {
+        svgMode.classList.add('hidden');
+        gcodeMode.classList.remove('hidden');
+      } else {
+        svgMode.classList.remove('hidden');
+        gcodeMode.classList.add('hidden');
+      }
+      loadPreview();
+    }
+
+    function loadFileList() {
+      fetch('/api/files')
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'ok' && data.files) {
+            const select = document.getElementById('svg-file');
+            const currentVal = select.value;
+            select.innerHTML = '';
+            data.files.forEach(f => {
+              const opt = document.createElement('option');
+              opt.value = f;
+              opt.textContent = f;
+              if (f === currentVal) opt.selected = true;
+              select.appendChild(opt);
+            });
+            if (data.files.includes(currentVal)) {
+              select.value = currentVal;
+            }
+            addLog(`Loaded ${data.files.length} vector/gcode files from workspace.`);
+            onFileSelectionChanged();
+          }
+        });
+    }
+
+    function uploadSelectedFile() {
+      const input = document.getElementById('file-upload-input');
+      if (!input.files || input.files.length === 0) return;
+      const file = input.files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+
+      addLog(`Uploading '${file.name}' to workspace...`);
+      fetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          addLog(`[UPLOAD] ${data.message}`);
+          fetch('/api/files')
+            .then(r => r.json())
+            .then(fileData => {
+              if (fileData.status === 'ok' && fileData.files) {
+                const select = document.getElementById('svg-file');
+                select.innerHTML = '';
+                fileData.files.forEach(f => {
+                  const opt = document.createElement('option');
+                  opt.value = f;
+                  opt.textContent = f;
+                  select.appendChild(opt);
+                });
+                select.value = data.filename;
+                onFileSelectionChanged();
+              }
+            });
+        } else {
+          addLog(`[ERROR] Upload failed: ${data.message}`);
+        }
+      })
+      .catch(err => addLog(`[ERROR] Upload failed: ${err}`));
+    }
+
     function runCut() {
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
-      addLog(`[CUTTER] Stripping pixel images & sending ONLY vector cut paths (G-code) to Ender 3 machine...`);
+      addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
       fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
@@ -715,10 +923,10 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
-    // Auto-refresh cameras on page load
+    // Auto-refresh cameras & load file list on page load
     window.addEventListener('DOMContentLoaded', () => {
       refreshCameras();
-      loadPreview();
+      loadFileList();
     });
   </script>
 </body>
@@ -736,6 +944,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode("utf-8"))
+        elif parsed.path == "/api/files":
+            valid_exts = (".svg", ".gcode", ".nc", ".gc", ".tap")
+            files = [f for f in os.listdir(WORKSPACE_DIR) if f.lower().endswith(valid_exts)]
+            files.sort(key=lambda x: (0 if x.lower() == "cut.svg" else 1, x.lower()))
+            resp = {"status": "ok", "files": files}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
         elif parsed.path == "/api/settings":
             cfg = load_config()
             resp = {"status": "ok", "settings": cfg}
@@ -826,98 +1043,101 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if os.path.isfile(filepath):
                 try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        svg_code = f.read()
-
-                    # Sanitize SVG: ensure any display:none on artwork images or layers is enabled on-the-fly
-                    svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
-
                     cfg = load_config()
                     bed_w = cfg.get("bed_width_mm", 210.0)
                     bed_h = cfg.get("bed_height_mm", 297.0)
 
-                    import re
-                    w_match = re.search(r'width=["\']([0-9.]+)(mm|px)?["\']', svg_code)
-                    h_match = re.search(r'height=["\']([0-9.]+)(mm|px)?["\']', svg_code)
-                    vb_match = re.search(r'viewBox=["\']([0-9.\s,-]+)["\']', svg_code)
+                    if filename.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
+                        count, preview_html = render_gcode_preview_html(filepath, bed_w, bed_h)
+                        resp = {"status": "ok", "contours_count": count, "svg_content": preview_html}
+                    else:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            svg_code = f.read()
 
-                    svg_w = float(w_match.group(1)) if w_match else 210.0
-                    svg_h = float(h_match.group(1)) if h_match else 297.0
+                        # Sanitize SVG: ensure any display:none on artwork images or layers is enabled on-the-fly
+                        svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
 
-                    if vb_match:
-                        vb_parts = [float(x) for x in re.split(r'[\s,]+', vb_match.group(1).strip()) if x]
-                        if len(vb_parts) == 4:
-                            if not w_match:
-                                svg_w = vb_parts[2]
-                            if not h_match:
-                                svg_h = vb_parts[3]
+                        import re
+                        w_match = re.search(r'width=["\']([0-9.]+)(mm|px)?["\']', svg_code)
+                        h_match = re.search(r'height=["\']([0-9.]+)(mm|px)?["\']', svg_code)
+                        vb_match = re.search(r'viewBox=["\']([0-9.\s,-]+)["\']', svg_code)
 
-                    # Bounding total viewport encompassing BOTH Bed and Sheet at 1:1 physical scale
-                    total_w = max(bed_w, svg_w)
-                    total_h = max(bed_h, svg_h)
+                        svg_w = float(w_match.group(1)) if w_match else 210.0
+                        svg_h = float(h_match.group(1)) if h_match else 297.0
 
-                    bed_w_pct = (bed_w / total_w) * 100.0
-                    bed_h_pct = (bed_h / total_h) * 100.0
+                        if vb_match:
+                            vb_parts = [float(x) for x in re.split(r'[\s,]+', vb_match.group(1).strip()) if x]
+                            if len(vb_parts) == 4:
+                                if not w_match:
+                                    svg_w = vb_parts[2]
+                                if not h_match:
+                                    svg_h = vb_parts[3]
 
-                    sheet_w_pct = (svg_w / total_w) * 100.0
-                    sheet_h_pct = (svg_h / total_h) * 100.0
+                        # Bounding total viewport encompassing BOTH Bed and Sheet at 1:1 physical scale
+                        total_w = max(bed_w, svg_w)
+                        total_h = max(bed_h, svg_h)
 
-                    exceeds_w = svg_w > bed_w
-                    exceeds_h = svg_h > bed_h
-                    exceeds = exceeds_w or exceeds_h
+                        bed_w_pct = (bed_w / total_w) * 100.0
+                        bed_h_pct = (bed_h / total_h) * 100.0
 
-                    diff_h = max(0.0, svg_h - bed_h)
-                    diff_w = max(0.0, svg_w - bed_w)
+                        sheet_w_pct = (svg_w / total_w) * 100.0
+                        sheet_h_pct = (svg_h / total_h) * 100.0
 
-                    badge_exceeds = ""
-                    if exceeds:
-                        ex_msg = []
-                        if exceeds_w:
-                            ex_msg.append(f"+{diff_w:.0f}mm X")
-                        if exceeds_h:
-                            ex_msg.append(f"+{diff_h:.0f}mm Y")
-                        badge_exceeds = f"<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.25); color:#f87171; border:1px solid rgba(239, 68, 68, 0.4); font-size:10px; font-weight:bold;'>⚠️ Exceeds Bed ({', '.join(ex_msg)})</span>"
+                        exceeds_w = svg_w > bed_w
+                        exceeds_h = svg_h > bed_h
+                        exceeds = exceeds_w or exceeds_h
 
-                    preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#090d16; user-select:none;">
-                      <!-- Dimension Status Header -->
-                      <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px; z-index:10;">
-                        <span style="padding:2px 8px; border-radius:4px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3); font-weight:600;">
-                          🛏️ Bed: {bed_w:.0f}×{bed_h:.0f} mm
-                        </span>
-                        <span style="padding:2px 8px; border-radius:4px; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3); font-weight:600;">
-                          📄 Sheet: {svg_w:.0f}×{svg_h:.0f} mm
-                        </span>
-                        {badge_exceeds}
-                      </div>
+                        diff_h = max(0.0, svg_h - bed_h)
+                        diff_w = max(0.0, svg_w - bed_w)
 
-                      <!-- Total Viewport Container holding Bed + Sheet at 1:1 Physical Scale -->
-                      <div style="aspect-ratio:{total_w}/{total_h}; width:100%; max-width:92%; max-height:82%; background:#050811; border:1px solid #1e293b; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.7); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start; padding:0;">
+                        badge_exceeds = ""
+                        if exceeds:
+                            ex_msg = []
+                            if exceeds_w:
+                                ex_msg.append(f"+{diff_w:.0f}mm X")
+                            if exceeds_h:
+                                ex_msg.append(f"+{diff_h:.0f}mm Y")
+                            badge_exceeds = f"<span style='padding:2px 8px; border-radius:4px; background:rgba(239, 68, 68, 0.25); color:#f87171; border:1px solid rgba(239, 68, 68, 0.4); font-size:10px; font-weight:bold;'>⚠️ Exceeds Bed ({', '.join(ex_msg)})</span>"
 
-                        <!-- 1. Physical Printer Bed Box -->
-                        <div style="position:absolute; top:0; left:0; width:{bed_w_pct:.2f}%; height:{bed_h_pct:.2f}%; background:#111827; border:2px solid #3b82f6; border-radius:4px; box-sizing:border-box; z-index:1; overflow:hidden;">
-                          <!-- Grid Pattern Overlay -->
-                          <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(59, 130, 246, 0.15) 1px, transparent 1px), linear-gradient(to bottom, rgba(59, 130, 246, 0.15) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
-                          <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#60a5fa; background:rgba(15,23,42,0.85); padding:1px 4px; border-radius:2px; pointer-events:none; z-index:5;">(0,0) Bed Origin</div>
-                        </div>
+                        preview_html = f'''<div style="width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:4px; background:#090d16; user-select:none;">
+                          <!-- Dimension Status Header -->
+                          <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:monospace; margin-bottom:6px; z-index:10;">
+                            <span style="padding:2px 8px; border-radius:4px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3); font-weight:600;">
+                              🛏️ Bed: {bed_w:.0f}×{bed_h:.0f} mm
+                            </span>
+                            <span style="padding:2px 8px; border-radius:4px; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3); font-weight:600;">
+                              📄 Sheet: {svg_w:.0f}×{svg_h:.0f} mm
+                            </span>
+                            {badge_exceeds}
+                          </div>
 
-                        <!-- 2. SVG Paper Sheet (True 1:1 Scale) -->
-                        <div style="position:absolute; top:0; left:0; width:{sheet_w_pct:.2f}%; height:{sheet_h_pct:.2f}%; background:#ffffff; box-shadow:0 4px 16px rgba(0,0,0,0.6); z-index:2; display:flex; justify-content:center; align-items:center; border:1px solid #cbd5e1; overflow:hidden;">
-                          {svg_code_sanitized}
+                          <!-- Total Viewport Container holding Bed + Sheet at 1:1 Physical Scale -->
+                          <div style="aspect-ratio:{total_w}/{total_h}; width:100%; max-width:92%; max-height:82%; background:#050811; border:1px solid #1e293b; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.7); position:relative; overflow:hidden; display:flex; justify-content:flex-start; align-items:flex-start; padding:0;">
 
-                          <!-- Red Hazard Overlay for portion exceeding bed Y/X limit -->
-                          {"<div style='position:absolute; top:" + f"{(bed_h_pct / sheet_h_pct * 100.0):.2f}" + "%; bottom:0; left:0; right:0; background:rgba(239, 68, 68, 0.35); border-top:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE PRINTABLE BED (+" + f"{diff_h:.0f}mm EXCEEDED)</div>" if exceeds_h else ""}
-                          {"<div style='position:absolute; left:" + f"{(bed_w_pct / sheet_w_pct * 100.0):.2f}" + "%; right:0; top:0; bottom:0; background:rgba(239, 68, 68, 0.35); border-left:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE BED</div>" if (exceeds_w and not exceeds_h) else ""}
-                        </div>
+                            <!-- 1. Physical Printer Bed Box -->
+                            <div style="position:absolute; top:0; left:0; width:{bed_w_pct:.2f}%; height:{bed_h_pct:.2f}%; background:#111827; border:2px solid #3b82f6; border-radius:4px; box-sizing:border-box; z-index:1; overflow:hidden;">
+                              <!-- Grid Pattern Overlay -->
+                              <div style="position:absolute; inset:0; background-image:linear-gradient(to right, rgba(59, 130, 246, 0.15) 1px, transparent 1px), linear-gradient(to bottom, rgba(59, 130, 246, 0.15) 1px, transparent 1px); background-size: 20px 20px; pointer-events:none;"></div>
+                              <div style="position:absolute; bottom:4px; left:6px; font-size:9px; font-family:monospace; color:#60a5fa; background:rgba(15,23,42,0.85); padding:1px 4px; border-radius:2px; pointer-events:none; z-index:5;">(0,0) Bed Origin</div>
+                            </div>
 
-                      </div>
-                    </div>'''
+                            <!-- 2. SVG Paper Sheet (True 1:1 Scale) -->
+                            <div style="position:absolute; top:0; left:0; width:{sheet_w_pct:.2f}%; height:{sheet_h_pct:.2f}%; background:#ffffff; box-shadow:0 4px 16px rgba(0,0,0,0.6); z-index:2; display:flex; justify-content:center; align-items:center; border:1px solid #cbd5e1; overflow:hidden;">
+                              {svg_code_sanitized}
 
-                    sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
-                    from drag_knife_planner import SVGParser
-                    parser_obj = SVGParser(step_size_mm=1.0)
-                    contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
+                              <!-- Red Hazard Overlay for portion exceeding bed Y/X limit -->
+                              {"<div style='position:absolute; top:" + f"{(bed_h_pct / sheet_h_pct * 100.0):.2f}" + "%; bottom:0; left:0; right:0; background:rgba(239, 68, 68, 0.35); border-top:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE PRINTABLE BED (+" + f"{diff_h:.0f}mm EXCEEDED)</div>" if exceeds_h else ""}
+                              {"<div style='position:absolute; left:" + f"{(bed_w_pct / sheet_w_pct * 100.0):.2f}" + "%; right:0; top:0; bottom:0; background:rgba(239, 68, 68, 0.35); border-left:2px dashed #ef4444; backdrop-filter:blur(1px); display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:10px; font-family:monospace; font-weight:bold; text-shadow:0 1px 3px rgba(0,0,0,0.8); z-index:10; pointer-events:none;'>⛔ OUTSIDE BED</div>" if (exceeds_w and not exceeds_h) else ""}
+                            </div>
 
-                    resp = {"status": "ok", "contours_count": len(contours), "svg_content": preview_html}
+                          </div>
+                        </div>'''
+
+                        sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+                        from drag_knife_planner import SVGParser
+                        parser_obj = SVGParser(step_size_mm=1.0)
+                        contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
+                        resp = {"status": "ok", "contours_count": len(contours), "svg_content": preview_html}
                 except Exception as e:
                     resp = {"status": "error", "message": str(e)}
             else:
@@ -977,7 +1197,47 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
-        if parsed.path == "/api/settings":
+        if parsed.path == "/api/upload":
+            content_type = self.headers.get("Content-Type", "")
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length)
+
+            filename = None
+            file_bytes = None
+
+            if "multipart/form-data" in content_type:
+                import re
+                boundary_match = re.search(r'boundary=([^\s;]+)', content_type)
+                if boundary_match:
+                    boundary = boundary_match.group(1).encode()
+                    parts = post_body.split(b"--" + boundary)
+                    for part in parts:
+                        if b'filename="' in part:
+                            header_part, content = part.split(b"\r\n\r\n", 1)
+                            content = content.rsplit(b"\r\n", 1)[0]
+                            filename_match = re.search(r'filename="([^"]+)"', header_part.decode("utf-8", errors="ignore"))
+                            if filename_match:
+                                filename = os.path.basename(filename_match.group(1))
+                                file_bytes = content
+                                break
+            elif query.get("filename"):
+                filename = os.path.basename(query.get("filename")[0])
+                file_bytes = post_body
+
+            if filename and file_bytes is not None:
+                save_path = os.path.join(WORKSPACE_DIR, filename)
+                with open(save_path, "wb") as f:
+                    f.write(file_bytes)
+                resp = {"status": "ok", "filename": filename, "message": f"Successfully uploaded '{filename}'."}
+            else:
+                resp = {"status": "error", "message": "Failed to extract uploaded file."}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/settings":
             content_length = int(self.headers.get("Content-Length", 0))
             post_body = self.rfile.read(content_length)
             try:

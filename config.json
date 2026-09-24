@@ -1,14 +1,14 @@
 {
-  "bed_width_mm": 210.0,
-  "bed_height_mm": 297.0,
+  "bed_width_mm": 220,
+  "bed_height_mm": 220,
   "blade_offset_mm": 0.35,
-  "camera_offset_x_mm": -25.0,
-  "camera_offset_y_mm": 0.0,
+  "camera_offset_x_mm": -25,
+  "camera_offset_y_mm": 0,
   "mm_per_pixel": 0.05,
-  "z_safe_mm": 5.0,
-  "z_cut_mm": 0.0,
-  "f_cut_mm_min": 1200.0,
-  "f_travel_mm_min": 3000.0,
+  "z_safe_mm": 5,
+  "z_cut_mm": 0,
+  "f_cut_mm_min": 1200,
+  "f_travel_mm_min": 3000,
   "moonraker_url": "http://localhost:7125",
   "crowsnest_url": "http://localhost:8080/?action=stream"
 }
