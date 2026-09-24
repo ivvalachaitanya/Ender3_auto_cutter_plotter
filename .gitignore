@@ -1,5 +1,11 @@
 __pycache__/
 *.pyc
-*.gcode
+*.pyo
+.pytest_cache/
 .vscode/
 .idea/
+
+# Temporary generated files
+print_and_cut_output.gcode
+polycut_compensated_output.gcode
+affine_matrix.json

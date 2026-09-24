@@ -53,6 +53,17 @@ DEFAULT_CONFIG = {
 }
 
 
+def resolve_workspace_file(filename):
+    """Locate vector or toolpath file in root workspace directory or samples/ subfolder."""
+    p1 = os.path.join(WORKSPACE_DIR, filename)
+    if os.path.isfile(p1):
+        return p1
+    p2 = os.path.join(WORKSPACE_DIR, "samples", filename)
+    if os.path.isfile(p2):
+        return p2
+    return p1
+
+
 def load_config():
     """Load configuration from config.json or return defaults."""
     if os.path.isfile(CONFIG_PATH):
@@ -946,8 +957,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(HTML_PAGE.encode("utf-8"))
         elif parsed.path == "/api/files":
             valid_exts = (".svg", ".gcode", ".nc", ".gc", ".tap")
-            files = [f for f in os.listdir(WORKSPACE_DIR) if f.lower().endswith(valid_exts)]
-            files.sort(key=lambda x: (0 if x.lower() == "cut.svg" else 1, x.lower()))
+            file_set = set()
+            for d in [WORKSPACE_DIR, os.path.join(WORKSPACE_DIR, "samples")]:
+                if os.path.isdir(d):
+                    for f in os.listdir(d):
+                        if f.lower().endswith(valid_exts):
+                            file_set.add(f)
+            files = sorted(list(file_set), key=lambda x: (0 if x.lower() == "cut.svg" else 1, x.lower()))
             resp = {"status": "ok", "files": files}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1035,11 +1051,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/preview":
             query = parse_qs(parsed.query)
             filename = query.get("file", ["Cut.svg"])[0]
-
-            if filename.lower() == "cut1.svg" and os.path.isfile(os.path.join(WORKSPACE_DIR, "Cut.svg")):
-                filepath = os.path.join(WORKSPACE_DIR, "Cut.svg")
-            else:
-                filepath = os.path.join(WORKSPACE_DIR, filename)
+            filepath = resolve_workspace_file(filename)
 
             if os.path.isfile(filepath):
                 try:
@@ -1151,11 +1163,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/print-artwork":
             query = parse_qs(parsed.query)
             filename = query.get("file", ["Cut.svg"])[0]
-
-            if filename.lower() == "cut1.svg" and os.path.isfile(os.path.join(WORKSPACE_DIR, "Cut.svg")):
-                filepath = os.path.join(WORKSPACE_DIR, "Cut.svg")
-            else:
-                filepath = os.path.join(WORKSPACE_DIR, filename)
+            filepath = resolve_workspace_file(filename)
 
             if os.path.isfile(filepath):
                 try:

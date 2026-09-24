@@ -1,0 +1,14 @@
+{
+  "timestamp": 1789725088,
+  "frame_width": 640,
+  "frame_height": 480,
+  "fiducial_type": "circle",
+  "focus_status": "AUTO",
+  "detections": [
+    {
+      "id": 0,
+      "pixel_u": 65.882,
+      "pixel_v": 99.145
+    }
+  ]
+}

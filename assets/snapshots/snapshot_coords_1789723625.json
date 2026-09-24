@@ -1,0 +1,14 @@
+{
+  "timestamp": 1789723625,
+  "frame_width": 640,
+  "frame_height": 480,
+  "fiducial_type": "aruco",
+  "focus_status": "LOCKED",
+  "detections": [
+    {
+      "id": 2,
+      "pixel_u": 426.75,
+      "pixel_v": 209.0
+    }
+  ]
+}
