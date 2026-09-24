@@ -190,46 +190,59 @@ def main():
     logger.info("Computing 2D Rigid Affine Transformation matrix...")
     M = TransformEstimator.compute_affine_matrix(nominal_fiducials, measured_bed_points)
 
-    # Step 5: Parse SVG & Apply Affine Transformation
-    logger.info("Parsing SVG cut paths from '%s'...", args.svg)
-    svg_parser = SVGParser(step_size_mm=0.5)
-    raw_contours = svg_parser.parse_svg_paths(args.svg)
+    # Step 5: Check if input is SVG or PolyCut/JScut G-code File
+    if args.svg.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
+        logger.info("Input file '%s' detected as G-code (PolyCut / JScut / Inkscape).", args.svg)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+        from gcode_transformer import GCodeTransformer
 
-    if not raw_contours:
-        logger.error("No valid vector contours found in SVG file!")
-        sys.exit(1)
+        transformer = GCodeTransformer(matrix=M)
+        success = transformer.transform_gcode_file(args.svg, args.output)
+        if not success:
+            logger.error("Failed to apply fiducial compensation to PolyCut G-code file!")
+            sys.exit(1)
+        logger.info("Successfully applied 2D Affine Camera Fiducial Compensation to PolyCut G-code!")
+    else:
+        # Parse SVG & Apply Affine Transformation
+        logger.info("Parsing SVG cut paths from '%s'...", args.svg)
+        svg_parser = SVGParser(step_size_mm=0.5)
+        raw_contours = svg_parser.parse_svg_paths(args.svg)
 
-    transformed_contours = []
-    for contour in raw_contours:
-        pts_arr = np.array(contour, dtype=np.float64)
-        transformed_pts = TransformEstimator.transform_points(pts_arr, M)
-        transformed_contours.append([(pt[0], pt[1]) for pt in transformed_pts])
+        if not raw_contours:
+            logger.error("No valid vector contours found in SVG file!")
+            sys.exit(1)
 
-    # Step 6: Drag Knife Swivel Arc Compensation & Trajectory Planning
-    logger.info("Planning drag-knife trajectories (Blade Offset: %.3f mm)...", args.blade_offset)
-    knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0)
+        transformed_contours = []
+        for contour in raw_contours:
+            pts_arr = np.array(contour, dtype=np.float64)
+            transformed_pts = TransformEstimator.transform_points(pts_arr, M)
+            transformed_contours.append([(pt[0], pt[1]) for pt in transformed_pts])
 
-    planned_contours = []
-    for contour in transformed_contours:
-        planned_moves = knife_planner.plan_contour(contour)
-        if planned_moves:
-            planned_contours.append(planned_moves)
+        # Step 6: Drag Knife Swivel Arc Compensation & Trajectory Planning
+        logger.info("Planning drag-knife trajectories (Blade Offset: %.3f mm)...", args.blade_offset)
+        knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0)
 
-    # Step 7: Generate Klipper G-code
-    gcode_gen = GCodeGenerator(
-        z_safe=args.z_safe,
-        z_cut=args.z_cut,
-        f_cut=args.f_cut,
-        f_travel=args.f_travel,
-        dry_run=args.dry_run,
-    )
-    final_gcode = gcode_gen.generate_gcode(planned_contours)
+        planned_contours = []
+        for contour in transformed_contours:
+            planned_moves = knife_planner.plan_contour(contour)
+            if planned_moves:
+                planned_contours.append(planned_moves)
 
-    # Write G-code to local file
-    output_filename = args.output
-    with open(output_filename, "w", encoding="utf-8") as f:
-        f.write(final_gcode)
-    logger.info("Saved final G-code file to '%s'.", output_filename)
+        # Step 7: Generate Klipper G-code
+        gcode_gen = GCodeGenerator(
+            z_safe=args.z_safe,
+            z_cut=args.z_cut,
+            f_cut=args.f_cut,
+            f_travel=args.f_travel,
+            dry_run=args.dry_run,
+        )
+        final_gcode = gcode_gen.generate_gcode(planned_contours)
+
+        # Write G-code to local file
+        output_filename = args.output
+        with open(output_filename, "w", encoding="utf-8") as f:
+            f.write(final_gcode)
+        logger.info("Saved final G-code file to '%s'.", output_filename)
 
     # Step 8: Upload to Moonraker & Start Job
     if not args.mock:
