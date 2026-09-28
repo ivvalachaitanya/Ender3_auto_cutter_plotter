@@ -205,13 +205,9 @@ class TransformEstimator:
         du_px = pixel_u - center_u
         dv_px = center_v - pixel_v  # Invert Y axis: image Y goes down, bed Y goes up
 
-        # Physical position under camera optical axis
-        fiducial_cam_x = camera_gantry_x + (du_px * mm_per_pixel)
-        fiducial_cam_y = camera_gantry_y + (dv_px * mm_per_pixel)
-
-        # Subtract camera offset to get bed coordinates relative to toolhead origin
-        bed_x = fiducial_cam_x - camera_offset_x
-        bed_y = fiducial_cam_y - camera_offset_y
+        # Physical position under camera optical axis on printer bed mat
+        bed_x = camera_gantry_x + camera_offset_x + (du_px * mm_per_pixel)
+        bed_y = camera_gantry_y + camera_offset_y + (dv_px * mm_per_pixel)
 
         return bed_x, bed_y
 

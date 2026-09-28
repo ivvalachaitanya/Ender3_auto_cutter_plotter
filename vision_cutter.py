@@ -140,9 +140,23 @@ def main():
         nom_x, nom_y = nominal_pt[0], nominal_pt[1]
 
         # Calculate camera target gantry position so camera optical axis is positioned over nominal point
-        # Target_Cam_Gantry = Nominal_Bed_Pos + Camera_Offset
-        target_cam_x = nom_x + args.camera_offset_x
-        target_cam_y = nom_y + args.camera_offset_y
+        # Optical_Axis = Gantry_Pos + Camera_Offset  =>  Target_Gantry = Nominal_Bed_Pos - Camera_Offset
+        raw_target_x = nom_x - args.camera_offset_x
+        raw_target_y = nom_y - args.camera_offset_y
+
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        cfg = {}
+        if os.path.isfile(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                pass
+
+        bed_max_x = cfg.get("bed_width_mm", 220.0)
+        bed_max_y = cfg.get("bed_height_mm", 220.0)
+        target_cam_x = max(0.0, min(bed_max_x, raw_target_x))
+        target_cam_y = max(0.0, min(bed_max_y, raw_target_y))
 
         logger.info("Jogging camera over Fiducial #%d (Nominal: %.2f, %.2f) -> Target Gantry (%.2f, %.2f)...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y)
 
