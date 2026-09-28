@@ -38,14 +38,15 @@ CONFIG_PATH = os.path.join(WORKSPACE_DIR, "config.json")
 sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
 
 DEFAULT_CONFIG = {
-    "bed_width_mm": 210.0,
-    "bed_height_mm": 297.0,
+    "bed_width_mm": 220.0,
+    "bed_height_mm": 220.0,
     "blade_offset_mm": 0.35,
     "camera_offset_x_mm": -25.0,
     "camera_offset_y_mm": 0.0,
     "mm_per_pixel": 0.05,
     "z_safe_mm": 5.0,
     "z_cut_mm": 0.0,
+    "z_lift_swivel_mm": 0.0,
     "f_cut_mm_min": 1200.0,
     "f_travel_mm_min": 3000.0,
     "moonraker_url": "http://localhost:7125",
@@ -677,6 +678,11 @@ HTML_PAGE = """<!DOCTYPE html>
             <input type="number" id="cfg-z-cut" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
           </div>
           <div>
+            <label class="text-slate-400 block mb-1">Lift-and-Turn Swivel Height (mm):</label>
+            <input type="number" id="cfg-z-lift-swivel" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            <span class="text-[10px] text-slate-500">0.0 = in-plane (vinyl); 0.5 = lift-and-turn (paper)</span>
+          </div>
+          <div>
             <label class="text-slate-400 block mb-1">Cutting Feedrate (mm/min):</label>
             <input type="number" id="cfg-f-cut" step="50" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
           </div>
@@ -863,6 +869,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
             document.getElementById('cfg-z-safe').value = cfg.z_safe_mm;
             document.getElementById('cfg-z-cut').value = cfg.z_cut_mm;
+            document.getElementById('cfg-z-lift-swivel').value = cfg.z_lift_swivel_mm !== undefined ? cfg.z_lift_swivel_mm : 0.0;
             document.getElementById('cfg-f-cut').value = cfg.f_cut_mm_min;
             document.getElementById('cfg-f-travel').value = cfg.f_travel_mm_min;
             document.getElementById('cfg-moonraker-url').value = cfg.moonraker_url;
@@ -888,6 +895,7 @@ HTML_PAGE = """<!DOCTYPE html>
         mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
         z_safe_mm: parseFloat(document.getElementById('cfg-z-safe').value),
         z_cut_mm: parseFloat(document.getElementById('cfg-z-cut').value),
+        z_lift_swivel_mm: parseFloat(document.getElementById('cfg-z-lift-swivel').value) || 0.0,
         f_cut_mm_min: parseFloat(document.getElementById('cfg-f-cut').value),
         f_travel_mm_min: parseFloat(document.getElementById('cfg-f-travel').value),
         moonraker_url: document.getElementById('cfg-moonraker-url').value,
@@ -1555,6 +1563,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if cam_source == "mock" or not cam_source.isdigit():
                 cmd.append("--mock")
+
+            cfg = load_config()
+            z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
+            if z_lift_swivel > 0.0:
+                cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])
 
             if dry_flag:
                 cmd.append(dry_flag)

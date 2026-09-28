@@ -7,6 +7,7 @@
   "mm_per_pixel": 0.05,
   "z_safe_mm": 5,
   "z_cut_mm": 0,
+  "z_lift_swivel_mm": 0.0,
   "f_cut_mm_min": 1200,
   "f_travel_mm_min": 3000,
   "moonraker_url": "http://192.168.1.20:7125",
