@@ -573,9 +573,14 @@ HTML_PAGE = """<!DOCTYPE html>
           <span class="text-slate-400">Dry Run (Air Cut):</span>
           <input type="checkbox" id="dry-run" class="accent-emerald-500">
         </div>
-        <button onclick="runBoundingBoxFrame()" class="w-full bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-xs font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
-          <span>🔲 Trace Bounding Box (Frame)</span>
-        </button>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <button onclick="runBoundingBoxFrame()" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-[11px] font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
+            <span>🔲 Frame Bounds</span>
+          </button>
+          <button onclick="downloadGcode()" class="bg-purple-700 hover:bg-purple-600 text-white py-1.5 rounded text-[11px] font-semibold shadow transition-all flex items-center justify-center space-x-1">
+            <span>💾 Save G-code</span>
+          </button>
+        </div>
         <button onclick="runCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg">🚀 START VINYL CUT</button>
       </div>
     </div>
@@ -1105,6 +1110,13 @@ HTML_PAGE = """<!DOCTYPE html>
         .finally(() => clearTimeout(timeoutId));
     }
 
+    function downloadGcode() {
+      const file = document.getElementById('svg-file').value;
+      const dry = document.getElementById('dry-run').checked ? '1' : '0';
+      addLog(`[GCODE] Generating & downloading Klipper G-code for '${file}'...`);
+      window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}`;
+    }
+
     function runCut() {
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
@@ -1376,7 +1388,47 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             else:
                 resp = {"status": "error", "message": f"File '{filename}' not found."}
 
-            self.send_response(404)
+        elif parsed.path == "/api/download_gcode":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut.svg"])[0]
+            dry_flag = query.get("dry", ["0"])[0]
+            filepath = resolve_workspace_file(filename)
+
+            if os.path.isfile(filepath):
+                base_name = os.path.splitext(filename)[0]
+                out_filename = f"{base_name}_cutter.gcode"
+                out_filepath = os.path.join(WORKSPACE_DIR, out_filename)
+
+                cmd = [sys.executable, "vision_cutter.py", "--svg", filename, "--output", out_filename, "--mock"]
+                cfg = load_config()
+                z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
+                if z_lift_swivel > 0.0:
+                    cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])
+
+                if dry_flag == "1" or dry_flag == "true":
+                    cmd.append("--dry-run")
+
+                try:
+                    res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=30)
+                    if res.returncode == 0 and os.path.isfile(out_filepath):
+                        with open(out_filepath, "rb") as f:
+                            gcode_bytes = f.read()
+
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/x-gcode; charset=utf-8")
+                        self.send_header("Content-Disposition", f'attachment; filename="{out_filename}"')
+                        self.send_header("Content-Length", str(len(gcode_bytes)))
+                        self.end_headers()
+                        self.wfile.write(gcode_bytes)
+                        return
+                    else:
+                        resp = {"status": "error", "message": res.stderr or res.stdout or "G-code generation failed."}
+                except Exception as err:
+                    resp = {"status": "error", "message": str(err)}
+            else:
+                resp = {"status": "error", "message": f"File '{filename}' not found."}
+
+            self.send_response(400)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))

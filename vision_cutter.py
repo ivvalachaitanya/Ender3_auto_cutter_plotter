@@ -98,8 +98,12 @@ def main():
 
     # Validate SVG existence
     if not os.path.isfile(args.svg):
-        logger.error("Specified SVG file '%s' does not exist.", args.svg)
-        sys.exit(1)
+        samples_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "samples", args.svg)
+        if os.path.isfile(samples_path):
+            args.svg = samples_path
+        else:
+            logger.error("Specified SVG/Gcode file '%s' does not exist.", args.svg)
+            sys.exit(1)
 
     # Parse nominal fiducial locations
     try:
