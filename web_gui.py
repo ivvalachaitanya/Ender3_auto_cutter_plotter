@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -305,6 +306,29 @@ class CameraStreamer:
             "type": "mock"
         })
         return cameras
+
+    def fetch_crowsnest_frame(self):
+        """Fetch live frame from Klipper Crowsnest snapshot endpoint."""
+        cfg = load_config()
+        crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
+        urls_to_try = []
+        if "action=stream" in crowsnest_url:
+            urls_to_try.append(crowsnest_url.replace("action=stream", "action=snapshot"))
+        urls_to_try.append(crowsnest_url)
+
+        for url in urls_to_try:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "CutterStudio/1.0"})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    data = resp.read()
+                    if data and len(data) > 0 and cv2 is not None and np is not None:
+                        img_array = np.frombuffer(data, dtype=np.uint8)
+                        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if frame is not None and frame.size > 0:
+                            return frame
+            except Exception:
+                pass
+        return None
 
     def generate_mock_frame(self, frame_num: int):
         """Generate a 640x480 synthetic camera frame with grid, reticle, and ArUco markers."""
@@ -1198,7 +1222,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(resp).encode("utf-8"))
         elif parsed.path == "/api/camera/stream":
             query = parse_qs(parsed.query)
-            source_str = query.get("source", ["0"])[0]
+            source_str = query.get("source", ["crowsnest"])[0]
 
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -1216,7 +1240,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     frame_count += 1
                     frame = None
 
-                    if cap is not None and cap.isOpened():
+                    if source_str == "crowsnest" or (not source_str.isdigit() and source_str != "mock"):
+                        raw_frame = camera_streamer.fetch_crowsnest_frame()
+                        if raw_frame is not None:
+                            frame = camera_streamer.annotate_frame(raw_frame)
+
+                    if frame is None and cap is not None and cap.isOpened():
                         ret, raw_frame = cap.read()
                         if ret and raw_frame is not None:
                             frame = camera_streamer.annotate_frame(raw_frame)
@@ -1235,7 +1264,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         self.wfile.write(jpeg_bytes)
                         self.wfile.write(b"\r\n")
 
-                    time.sleep(0.033)  # ~30 FPS
+                    time.sleep(0.05)
             except (BrokenPipeError, ConnectionResetError, Exception):
                 pass
             finally:
@@ -1606,17 +1635,23 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/api/scan" or parsed.path == "/api/cut":
             filename = query.get("file", ["Cut1.svg"])[0]
-            cam_source = query.get("camera", ["0"])[0]
+            cam_source = query.get("camera", ["crowsnest"])[0]
             dry_flag = query.get("dry", [""])[0]
 
             cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
-            if cam_source.isdigit():
-                cmd.extend(["--camera-index", cam_source])
-
-            if cam_source == "mock" or not cam_source.isdigit():
-                cmd.append("--mock")
 
             cfg = load_config()
+            moonraker_url = cfg.get("moonraker_url", "http://localhost:7125")
+            crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
+
+            cmd.extend(["--moonraker-url", moonraker_url])
+            cmd.extend(["--crowsnest-url", crowsnest_url])
+
+            if cam_source.isdigit():
+                cmd.extend(["--camera-index", cam_source])
+            elif cam_source == "mock":
+                cmd.append("--mock")
+
             z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
             if z_lift_swivel > 0.0:
                 cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])
@@ -1625,10 +1660,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 cmd.append(dry_flag)
 
             try:
-                res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=30)
+                res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=120)
                 resp = {
                     "status": "ok" if res.returncode == 0 else "error",
-                    "message": f"Pipeline executed successfully for {filename}." if res.returncode == 0 else (res.stderr or res.stdout),
+                    "message": f"Pipeline executed successfully for {filename}." if res.returncode == 0 else (res.stderr or res.stdout or "Pipeline execution failed."),
                 }
             except Exception as err:
                 resp = {"status": "error", "message": str(err)}

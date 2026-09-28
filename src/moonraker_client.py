@@ -184,15 +184,20 @@ class CameraClient:
 
         # Attempt 1: HTTP Snapshot stream
         if self.snapshot_url:
-            try:
-                resp = self.session.get(self.snapshot_url, timeout=self.timeout)
-                if resp.status_code == 200 and len(resp.content) > 0:
-                    img_array = np.frombuffer(resp.content, dtype=np.uint8)
-                    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    if frame is not None and frame.size > 0:
-                        return frame
-            except requests.RequestException as e:
-                logger.warning("Crowsnest HTTP snapshot request failed (%s). Trying local camera index %d...", e, self.camera_index)
+            urls_to_try = [self.snapshot_url]
+            if "action=stream" in self.snapshot_url:
+                urls_to_try.insert(0, self.snapshot_url.replace("action=stream", "action=snapshot"))
+
+            for url in urls_to_try:
+                try:
+                    resp = self.session.get(url, timeout=self.timeout)
+                    if resp.status_code == 200 and len(resp.content) > 0:
+                        img_array = np.frombuffer(resp.content, dtype=np.uint8)
+                        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if frame is not None and frame.size > 0:
+                            return frame
+                except requests.RequestException as e:
+                    logger.warning("Crowsnest HTTP snapshot request to '%s' failed (%s). Trying local fallback...", url, e)
 
         # Attempt 2: Local OpenCV VideoCapture fallback
         cap = cv2.VideoCapture(self.camera_index)
