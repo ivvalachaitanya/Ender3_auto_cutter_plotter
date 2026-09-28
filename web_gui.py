@@ -392,6 +392,24 @@ class CameraStreamer:
 
 camera_streamer = CameraStreamer()
 
+# Shared persistent Moonraker client so we reuse TCP connections (HTTP keep-alive)
+# instead of creating a new requests.Session / TCP connection on every button press.
+_moonraker_client = None
+_moonraker_client_url = None
+
+
+def get_moonraker_client():
+    """Return a shared MoonrakerClient instance, recreating it only if the URL changed."""
+    global _moonraker_client, _moonraker_client_url
+    cfg = load_config()
+    moon_url = cfg.get("moonraker_url", "http://localhost:7125")
+    if _moonraker_client is None or _moonraker_client_url != moon_url:
+        sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+        from moonraker_client import MoonrakerClient
+        _moonraker_client = MoonrakerClient(base_url=moon_url, timeout=5.0)
+        _moonraker_client_url = moon_url
+    return _moonraker_client
+
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -733,28 +751,61 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('step-' + activeId).className = "px-1.5 py-0.5 rounded bg-purple-600 text-white font-mono";
     }
 
+    let jogBusy = false;  // Debounce flag to prevent overlapping jogs
+
     function jog(axis, dir) {
+      if (jogBusy) {
+        addLog('[JOG] Previous jog still in progress, please wait...');
+        return;
+      }
+      jogBusy = true;
       const dist = dir * currentStepSize;
       addLog(`[JOG] Moving ${axis} by ${dist > 0 ? '+' : ''}${dist} mm...`);
-      fetch(`/api/jog?axis=${axis}&dist=${dist}`, { method: 'POST' })
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch(`/api/jog?axis=${axis}&dist=${dist}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
-          if (data.position) {
-            addLog(`Toolhead Position: X=${data.position[0].toFixed(2)}, Y=${data.position[1].toFixed(2)}, Z=${data.position[2].toFixed(2)}`);
+          if (data.status === 'error') {
+            addLog('[ERROR] Jog command failed on printer.');
           }
+        })
+        .catch(err => addLog(`[ERROR] Jog request failed: ${err.message}`))
+        .finally(() => {
+          jogBusy = false;
+          clearTimeout(timeoutId);
         });
     }
 
     function jogHome() {
+      if (jogBusy) {
+        addLog('[JOG] Previous jog still in progress, cannot home.');
+        return;
+      }
+      jogBusy = true;
       addLog('[JOG] Homing X and Y gantries...');
-      fetch(`/api/jog?axis=HOME&dist=0`, { method: 'POST' })
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      fetch(`/api/jog?axis=HOME&dist=0`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
-        .then(data => addLog(data.message));
+        .then(data => {
+          addLog(data.message);
+          if (data.status === 'error') {
+            addLog('[ERROR] Homing failed on printer.');
+          }
+        })
+        .catch(err => addLog(`[ERROR] Homing request failed: ${err.message}`))
+        .finally(() => {
+          clearTimeout(timeoutId);
+          jogBusy = false;
+        });
     }
 
     function lockMark(idx) {
-      fetch('/api/toolhead_position')
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch('/api/toolhead_position', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           const pos = data.position || [10.0 + idx * 90.0, 10.0, 5.0];
@@ -763,7 +814,9 @@ HTML_PAGE = """<!DOCTYPE html>
           btn.className = "w-full bg-emerald-950/80 text-emerald-400 py-1 rounded border border-emerald-500/50 font-mono font-bold";
           btn.textContent = `✅ Mark #${idx} Locked (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`;
           addLog(`[MANUAL] Locked Registration Mark #${idx} at X=${pos[0].toFixed(2)} mm, Y=${pos[1].toFixed(2)} mm.`);
-        });
+        })
+        .catch(err => addLog(`[ERROR] Failed to lock mark #${idx}: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function solveManualAlignment() {
@@ -772,22 +825,32 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       addLog('[MANUAL] Solving 2D Affine Transformation Matrix from 3 locked points...');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       fetch('/api/manual_lock', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           actual: manualLockedPoints,
           nominal: [[15.0, 15.0], [195.0, 15.0], [15.0, 282.0]]
-        })
+        }),
+        signal: controller.signal
       })
       .then(r => r.json())
       .then(data => {
         addLog(data.message);
-      });
+        if (data.status === 'error') {
+          addLog('[ERROR] Alignment solve failed. Check that all 3 marks are locked correctly.');
+        }
+      })
+      .catch(err => addLog(`[ERROR] Alignment request failed: ${err.message}`))
+      .finally(() => clearTimeout(timeoutId));
     }
 
     function openSettingsModal() {
-      fetch('/api/settings')
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch('/api/settings', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'ok') {
@@ -806,7 +869,9 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-crowsnest-url').value = cfg.crowsnest_url;
             document.getElementById('settings-modal').classList.remove('hidden');
           }
-        });
+        })
+        .catch(err => addLog(`[ERROR] Settings load failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function closeSettingsModal() {
@@ -829,10 +894,13 @@ HTML_PAGE = """<!DOCTYPE html>
         crowsnest_url: document.getElementById('cfg-crowsnest-url').value,
       };
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newCfg)
+        body: JSON.stringify(newCfg),
+        signal: controller.signal
       })
       .then(r => r.json())
       .then(data => {
@@ -843,12 +911,16 @@ HTML_PAGE = """<!DOCTYPE html>
         } else {
           addLog('[ERROR] Failed to save settings: ' + data.message);
         }
-      });
+      })
+      .catch(err => addLog(`[ERROR] Settings save failed: ${err.message}`))
+      .finally(() => clearTimeout(timeoutId));
     }
 
     function refreshCameras() {
       addLog('Scanning attached camera devices...');
-      fetch('/api/cameras')
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch('/api/cameras', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'ok' && data.cameras.length > 0) {
@@ -863,7 +935,9 @@ HTML_PAGE = """<!DOCTYPE html>
             addLog(`Found ${data.cameras.length} camera sources.`);
             switchCameraStream();
           }
-        });
+        })
+        .catch(err => addLog(`[ERROR] Camera scan failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function switchCameraStream() {
@@ -876,7 +950,9 @@ HTML_PAGE = """<!DOCTYPE html>
     function loadPreview() {
       const file = document.getElementById('svg-file').value;
       addLog(`Loading SVG preview for '${file}'...`);
-      fetch(`/api/preview?file=${file}`)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch(`/api/preview?file=${file}`, { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'ok') {
@@ -885,7 +961,9 @@ HTML_PAGE = """<!DOCTYPE html>
           } else {
             addLog(`Error: ${data.message}`);
           }
-        });
+        })
+        .catch(err => addLog(`[ERROR] Failed to load preview: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function openPrintWindow() {
@@ -898,11 +976,18 @@ HTML_PAGE = """<!DOCTYPE html>
       const file = document.getElementById('svg-file').value;
       const cam = document.getElementById('camera-select').value;
       addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}'...`);
-      fetch(`/api/scan?file=${file}&camera=${cam}`, { method: 'POST' })
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      fetch(`/api/scan?file=${file}&camera=${cam}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
-        });
+          if (data.status === 'error') {
+            addLog('[ERROR] Vision scan failed.');
+          }
+        })
+        .catch(err => addLog(`[ERROR] Scan request failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function onFileSelectionChanged() {
@@ -921,7 +1006,9 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function loadFileList() {
-      fetch('/api/files')
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch('/api/files', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'ok' && data.files) {
@@ -941,7 +1028,9 @@ HTML_PAGE = """<!DOCTYPE html>
             addLog(`Loaded ${data.files.length} vector/gcode files from workspace.`);
             onFileSelectionChanged();
           }
-        });
+        })
+        .catch(err => addLog(`[ERROR] File list failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function uploadSelectedFile() {
@@ -952,15 +1041,20 @@ HTML_PAGE = """<!DOCTYPE html>
       formData.append('file', file);
 
       addLog(`Uploading '${file.name}' to workspace...`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       fetch('/api/upload', {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal: controller.signal
       })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'ok') {
           addLog(`[UPLOAD] ${data.message}`);
-          fetch('/api/files')
+          const controller2 = new AbortController();
+          const timeoutId2 = setTimeout(() => controller2.abort(), 5000);
+          fetch('/api/files', { signal: controller2.signal })
             .then(r => r.json())
             .then(fileData => {
               if (fileData.status === 'ok' && fileData.files) {
@@ -975,34 +1069,50 @@ HTML_PAGE = """<!DOCTYPE html>
                 select.value = data.filename;
                 onFileSelectionChanged();
               }
-            });
+            })
+            .catch(err => addLog(`[ERROR] Refresh file list failed: ${err.message}`))
+            .finally(() => clearTimeout(timeoutId2));
         } else {
           addLog(`[ERROR] Upload failed: ${data.message}`);
         }
       })
-      .catch(err => addLog(`[ERROR] Upload failed: ${err}`));
+      .catch(err => addLog(`[ERROR] Upload failed: ${err.message}`))
+      .finally(() => clearTimeout(timeoutId));
     }
 
     function runBoundingBoxFrame() {
       const file = document.getElementById('svg-file').value;
       addLog(`[FRAME] Tracing outer 4-corner bounding box for '${file}' at Safe Z...`);
-      fetch(`/api/frame?file=${file}`, { method: 'POST' })
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      fetch(`/api/frame?file=${file}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
+          if (data.status === 'error') {
+            addLog('[ERROR] Framing failed on printer.');
+          }
         })
-        .catch(err => addLog(`[ERROR] Framing failed: ${err}`));
+        .catch(err => addLog(`[ERROR] Framing request failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function runCut() {
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
-      fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST' })
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
-        });
+          if (data.status === 'error') {
+            addLog('[ERROR] Cut job failed to start.');
+          }
+        })
+        .catch(err => addLog(`[ERROR] Cut request failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     // Auto-refresh cameras & load file list on page load
@@ -1055,17 +1165,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))
         elif parsed.path == "/api/toolhead_position":
-            cfg = load_config()
-            moon_url = cfg.get("moonraker_url", "http://localhost:7125")
             try:
-                sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
-                from moonraker_client import MoonrakerClient
-                client = MoonrakerClient(base_url=moon_url)
-                if client.is_connected():
-                    pos = client.get_toolhead_position()
-                    resp = {"status": "ok", "position": list(pos)}
-                else:
-                    resp = {"status": "ok", "position": [15.0, 15.0, 5.0]}
+                client = get_moonraker_client()
+                pos = client.get_toolhead_position()
+                resp = {"status": "ok", "position": list(pos)}
             except Exception:
                 resp = {"status": "ok", "position": [15.0, 15.0, 5.0]}
 
@@ -1379,13 +1482,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/jog":
             axis = query.get("axis", ["X"])[0].upper()
             dist = float(query.get("dist", ["1.0"])[0])
-            cfg = load_config()
-            moon_url = cfg.get("moonraker_url", "http://localhost:7125")
 
             try:
-                sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
-                from moonraker_client import MoonrakerClient
-                client = MoonrakerClient(base_url=moon_url)
+                client = get_moonraker_client()
                 if axis == "HOME":
                     success = client.send_gcode("G28 X Y")
                     msg = "Homed X and Y gantries."
@@ -1394,10 +1493,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     success = client.send_gcode(gcode)
                     msg = f"Jogged {axis} {dist:+.1f}mm."
 
-                pos = client.get_toolhead_position() if success else (0.0, 0.0, 0.0)
-                resp = {"status": "ok" if success else "error", "message": msg, "position": list(pos)}
+                resp = {"status": "ok" if success else "error", "message": msg}
             except Exception as e:
-                resp = {"status": "ok", "message": f"[MOCK JOG] {axis} {dist:+.1f}mm executed."}
+                resp = {"status": "error", "message": f"Jog failed: {e}"}
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
