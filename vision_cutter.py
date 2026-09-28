@@ -64,12 +64,13 @@ def parse_args():
     parser.add_argument("--blade-offset", type=float, default=cfg.get("blade_offset_mm", 0.35), help="Drag knife blade offset (mm).")
 
     # Vision & Fiducials
+    default_nom = json.dumps(cfg.get("nominal_fiducials", [[0.0, 210.0], [170.0, 210.0], [0.0, 20.0]]))
     parser.add_argument("--fiducial-type", type=str, choices=["aruco", "circle"], default="aruco", help="Type of fiducial markers.")
     parser.add_argument(
         "--nominal-fiducials",
         type=str,
-        default="[[10.0, 10.0], [100.0, 10.0], [10.0, 100.0]]",
-        help="JSON string of nominal SVG fiducial coordinates e.g. '[[10,10], [100,10], [10,100]]'",
+        default=default_nom,
+        help="JSON string of nominal SVG fiducial coordinates e.g. '[[0,210], [170,210], [0,20]]'",
     )
 
     # Cutting Parameters

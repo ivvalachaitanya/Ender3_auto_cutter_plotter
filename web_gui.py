@@ -1595,9 +1595,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             post_body = self.rfile.read(content_length)
             try:
-                data = json.loads(post_body.decode("utf-8"))
+                cfg = load_config()
+                default_nom = cfg.get("nominal_fiducials", [[0.0, 210.0], [170.0, 210.0], [0.0, 20.0]])
                 actual_pts = np.array(data.get("actual", []), dtype=np.float64)
-                nominal_pts = np.array(data.get("nominal", [[15.0, 15.0], [195.0, 15.0], [15.0, 282.0]]), dtype=np.float64)
+                nominal_pts = np.array(data.get("nominal", default_nom), dtype=np.float64)
 
                 if len(actual_pts) < 3:
                     resp = {"status": "error", "message": "Please lock all 3 registration marks before solving alignment."}
