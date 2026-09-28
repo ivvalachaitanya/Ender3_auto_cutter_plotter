@@ -75,6 +75,7 @@ def parse_args():
     # Cutting Parameters
     parser.add_argument("--z-safe", type=float, default=cfg.get("z_safe_mm", 5.0), help="Safe travel Z height (mm).")
     parser.add_argument("--z-cut", type=float, default=cfg.get("z_cut_mm", 0.0), help="Cutting Z depth (mm).")
+    parser.add_argument("--z-lift-swivel", type=float, default=cfg.get("z_lift_swivel_mm", 0.0), help="Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = in-plane).")
     parser.add_argument("--f-cut", type=float, default=cfg.get("f_cut_mm_min", 1200.0), help="Cutting feedrate (mm/min).")
     parser.add_argument("--f-travel", type=float, default=cfg.get("f_travel_mm_min", 3000.0), help="Travel feedrate (mm/min).")
 
@@ -235,6 +236,7 @@ def main():
             f_cut=args.f_cut,
             f_travel=args.f_travel,
             dry_run=args.dry_run,
+            z_lift_swivel=args.z_lift_swivel,
         )
         final_gcode = gcode_gen.generate_gcode(planned_contours)
 
