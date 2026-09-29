@@ -259,6 +259,64 @@ def render_gcode_preview_html(filepath, bed_w=210.0, bed_h=297.0):
     return len(cut_moves), preview_html
 
 
+def generate_bed_test_pattern(grid_count=16, box_size=20.0, x_size=5.0, margin=15.0):
+    """
+    Generate an SVG test pattern for Bed Mesh / Z-height calibration.
+    Creates a grid of square check-boxes with a small 5x5mm 'X' mark at the center of each box.
+    """
+    cfg = load_config()
+    bed_w = float(cfg.get("bed_width_mm", 220.0))
+    bed_h = float(cfg.get("bed_height_mm", 220.0))
+
+    cols = max(1, int(math.sqrt(grid_count)))
+    rows = cols
+    if cols * rows < grid_count:
+        rows += 1
+
+    usable_w = max(10.0, bed_w - (2.0 * margin))
+    usable_h = max(10.0, bed_h - (2.0 * margin))
+
+    dx = usable_w / (cols - 1) if cols > 1 else 0.0
+    dy = usable_h / (rows - 1) if rows > 1 else 0.0
+
+    path_elements = []
+
+    for r in range(rows):
+        y_center = margin + (r * dy) if rows > 1 else (bed_h / 2.0)
+        for c in range(cols):
+            x_center = margin + (c * dx) if cols > 1 else (bed_w / 2.0)
+
+            # Outer box
+            x_min = x_center - (box_size / 2.0)
+            x_max = x_center + (box_size / 2.0)
+            y_min = y_center - (box_size / 2.0)
+            y_max = y_center + (box_size / 2.0)
+
+            box_d = f"M {x_min:.2f},{y_min:.2f} L {x_max:.2f},{y_min:.2f} L {x_max:.2f},{y_max:.2f} L {x_min:.2f},{y_max:.2f} Z"
+            path_elements.append(f'    <path d="{box_d}" stroke="#10b981" stroke-width="1" fill="none"/>')
+
+            # Center X mark
+            hx = x_size / 2.0
+            x_d = f"M {x_center - hx:.2f},{y_center - hx:.2f} L {x_center + hx:.2f},{y_center + hx:.2f} M {x_center - hx:.2f},{y_center + hx:.2f} L {x_center + hx:.2f},{y_center - hx:.2f}"
+            path_elements.append(f'    <path d="{x_d}" stroke="#f43f5e" stroke-width="1.2" fill="none"/>')
+
+    svg_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{bed_w:.1f}mm" height="{bed_h:.1f}mm" viewBox="0 0 {bed_w:.1f} {bed_h:.1f}">
+  <g id="bed_test_grid">
+{os.linesep.join(path_elements)}
+  </g>
+</svg>'''
+
+    svg_filename = f"bed_mesh_test_{grid_count}.svg"
+    samples_dir = os.path.join(WORKSPACE_DIR, "samples")
+    os.makedirs(samples_dir, exist_ok=True)
+    svg_filepath = os.path.join(samples_dir, svg_filename)
+    with open(svg_filepath, "w", encoding="utf-8") as f:
+        f.write(svg_content)
+
+    return svg_filename
+
+
 class CameraStreamer:
     """Helper class to enumerate, capture, annotate, and stream camera feeds."""
 
@@ -470,6 +528,9 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
       <div class="flex items-center space-x-3">
         <span class="px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">● Klipper Online (7125)</span>
+        <button onclick="openBedTestModal()" class="px-3 py-1.5 rounded-lg text-xs bg-amber-900/60 hover:bg-amber-800 text-amber-300 border border-amber-600/50 font-semibold flex items-center space-x-1.5 shadow transition-all hover:border-amber-400">
+          <span>🏁 Bed Mesh Test</span>
+        </button>
         <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold flex items-center space-x-1.5 shadow transition-all hover:border-slate-500">
           <span>⚙️ Hardware Settings</span>
         </button>
@@ -745,6 +806,57 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Bed Mesh Test Generator Modal -->
+  <div id="bed-test-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="card w-full max-w-md p-6 space-y-4 shadow-2xl border border-slate-700">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-amber-400 flex items-center space-x-2">
+          <span>🏁 Bed Mesh Z-Cut Test Pattern Generator</span>
+        </h3>
+        <button onclick="closeBedTestModal()" class="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+      </div>
+
+      <p class="text-xs text-slate-300 leading-relaxed">
+        Generate a grid of check-boxes across your printable bed with a 5×5mm "X" mark in the center of each box. 
+        Cut this pattern on paper or vinyl to visually verify your Klipper Bed Mesh Z compensation depth across the entire bed plate!
+      </p>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="text-slate-400 block mb-1 font-semibold">Number of Test Boxes (Grid):</label>
+          <select id="cfg-bed-grid" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-amber-300 font-semibold text-xs">
+            <option value="1">1 Box (1×1 - Center Bed Check)</option>
+            <option value="4">4 Boxes (2×2 - 4 Bed Corners)</option>
+            <option value="16" selected>16 Boxes (4×4 - Standard Bed Mesh Test)</option>
+            <option value="64">64 Boxes (8×8 - Fine Mesh Verification)</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-slate-400 block mb-1 font-semibold">Outer Box Size (mm):</label>
+            <input type="number" id="cfg-bed-box-size" value="20" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1 font-semibold">Center "X" Size (mm):</label>
+            <input type="number" id="cfg-bed-x-size" value="5" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono">
+          </div>
+        </div>
+
+        <div>
+          <label class="text-slate-400 block mb-1 font-semibold">Bed Margin (mm):</label>
+          <input type="number" id="cfg-bed-margin" value="15" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono">
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="flex justify-end space-x-3 border-t border-slate-700 pt-4">
+        <button onclick="closeBedTestModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold">Cancel</button>
+        <button onclick="generateBedTestPattern()" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold shadow-lg">🎨 Generate & Load Preview</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentStepSize = 1.0;
     let manualLockedPoints = [null, null, null];
@@ -912,6 +1024,51 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function closeSettingsModal() {
       document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    function openBedTestModal() {
+      document.getElementById('bed-test-modal').classList.remove('hidden');
+    }
+
+    function closeBedTestModal() {
+      document.getElementById('bed-test-modal').classList.add('hidden');
+    }
+
+    function generateBedTestPattern() {
+      const grid = parseInt(document.getElementById('cfg-bed-grid').value);
+      const boxSize = parseFloat(document.getElementById('cfg-bed-box-size').value);
+      const xSize = parseFloat(document.getElementById('cfg-bed-x-size').value);
+      const margin = parseFloat(document.getElementById('cfg-bed-margin').value);
+
+      addLog(`[BED TEST] Generating ${grid}-box mesh calibration test pattern...`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      fetch('/api/generate_bed_test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grid_count: grid, box_size: boxSize, x_size: xSize, margin: margin }),
+        signal: controller.signal
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          addLog(`[BED TEST] ${data.message} Loading file preview...`);
+          closeBedTestModal();
+          loadFileList();
+          setTimeout(() => {
+            const select = document.getElementById('svg-file');
+            select.value = data.filename;
+            onFileSelectionChanged();
+            loadPreview();
+          }, 300);
+        } else {
+          addLog(`[ERROR] Bed test pattern generation failed: ${data.message}`);
+        }
+      })
+      .catch(err => addLog(`[ERROR] Failed to generate bed test pattern: ${err.message}`))
+      .finally(() => clearTimeout(timeoutId));
     }
 
     function saveSettings() {
@@ -1562,6 +1719,30 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     resp = {"status": "error", "message": "Failed to save settings file."}
             except Exception as e:
                 resp = {"status": "error", "message": str(e)}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/generate_bed_test":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_body.decode("utf-8")) if post_body else {}
+                grid_count = int(data.get("grid_count", 16))
+                box_size = float(data.get("box_size", 20.0))
+                x_size = float(data.get("x_size", 5.0))
+                margin = float(data.get("margin", 15.0))
+
+                svg_filename = generate_bed_test_pattern(grid_count, box_size, x_size, margin)
+                resp = {
+                    "status": "ok",
+                    "message": f"Generated {grid_count}-box Bed Mesh Test pattern ('{svg_filename}').",
+                    "filename": svg_filename,
+                }
+            except Exception as err:
+                resp = {"status": "error", "message": str(err)}
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
