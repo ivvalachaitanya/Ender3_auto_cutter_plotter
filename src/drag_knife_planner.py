@@ -285,6 +285,7 @@ class GCodeGenerator:
         lines.append("G21 ; Set units to millimeters")
         lines.append("G90 ; Use absolute coordinates")
         lines.append("M83 ; Relative extruder positioning (extruder disabled)")
+        lines.append("BED_MESH_PROFILE LOAD=default ; Load Klipper bed warp compensation mesh")
         lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Move to clearance level")
         lines.append("")
 
