@@ -246,6 +246,7 @@ class GCodeGenerator:
         f_plunge: float = 127.0,
         dry_run: bool = False,
         z_lift_swivel: float = 0.0,
+        pause_before_cut: bool = False,
     ):
         """
         Initialize G-code Generator.
@@ -257,6 +258,7 @@ class GCodeGenerator:
         :param f_plunge: Plunge feedrate in mm/min (default: 127 mm/min)
         :param dry_run: If True, sets z_cut = z_safe (no blade contact)
         :param z_lift_swivel: Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = disabled/in-plane)
+        :param pause_before_cut: If True, inserts PAUSE command before cutting starts to wait for user confirmation
         """
         self.z_safe = z_safe
         self.z_cut = z_safe if dry_run else z_cut
@@ -265,6 +267,7 @@ class GCodeGenerator:
         self.f_plunge = f_plunge
         self.dry_run = dry_run
         self.z_lift_swivel = z_lift_swivel
+        self.pause_before_cut = pause_before_cut
 
     def generate_gcode(self, planned_contours: List[List[Dict[str, Union[str, float, Tuple[float, float]]]]]) -> str:
         """
@@ -287,6 +290,13 @@ class GCodeGenerator:
         lines.append("M83 ; Relative extruder positioning (extruder disabled)")
         lines.append("BED_MESH_PROFILE LOAD=default ; Load Klipper bed warp compensation mesh")
         lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Move to clearance level")
+
+        if self.pause_before_cut:
+            lines.append("")
+            lines.append("; --- User Inspection Pause ---")
+            lines.append("M117 Check material & click Resume")
+            lines.append('RESPOND TYPE=echo MSG="Job Paused! Inspect material & click RESUME to start cut."')
+            lines.append("PAUSE ; Pause machine and wait for user to press Resume/OK")
         lines.append("")
 
         contour_count = 0
