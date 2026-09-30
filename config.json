@@ -2,7 +2,7 @@
   "bed_width_mm": 220,
   "bed_height_mm": 220,
   "blade_offset_mm": 0.35,
-  "camera_offset_x_mm": -25,
+  "camera_offset_x_mm": 25,
   "camera_offset_y_mm": 0,
   "mm_per_pixel": 0.05,
   "z_safe_mm": 5,
