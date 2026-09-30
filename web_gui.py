@@ -637,6 +637,17 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
           </div>
 
+          <!-- 4-Corner Bed Leveling (Tramming) Helper -->
+          <div class="bg-slate-900/90 p-2 rounded border border-slate-800 space-y-1">
+            <div class="text-[10px] font-semibold text-amber-300 text-center">📐 Bed Tramming (4-Corner Knobs)</div>
+            <div class="grid grid-cols-2 gap-1 text-[10px]">
+              <button onclick="jogToCorner('FL')" class="bg-slate-800 hover:bg-amber-900/60 text-amber-300 py-1 rounded border border-slate-700 font-mono">📍 Front-Left (25, 20)</button>
+              <button onclick="jogToCorner('FR')" class="bg-slate-800 hover:bg-amber-900/60 text-amber-300 py-1 rounded border border-slate-700 font-mono">📍 Front-Right (195, 20)</button>
+              <button onclick="jogToCorner('RL')" class="bg-slate-800 hover:bg-amber-900/60 text-amber-300 py-1 rounded border border-slate-700 font-mono">📍 Rear-Left (25, 210)</button>
+              <button onclick="jogToCorner('RR')" class="bg-slate-800 hover:bg-amber-900/60 text-amber-300 py-1 rounded border border-slate-700 font-mono">📍 Rear-Right (195, 210)</button>
+            </div>
+          </div>
+
           <!-- Lock Fiducial Marks -->
           <div class="space-y-1 text-[10px]">
             <button onclick="lockMark(0)" id="mark-0-btn" class="w-full bg-slate-800 hover:bg-slate-700 text-emerald-400 py-1 rounded border border-slate-700 font-mono">📌 Lock Mark #0 (Top-Left)</button>
@@ -947,6 +958,23 @@ HTML_PAGE = """<!DOCTYPE html>
           clearTimeout(timeoutId);
           jogBusy = false;
         });
+    }
+
+    function jogToCorner(corner) {
+      let x = 25, y = 20;
+      if (corner === 'FL') { x = 25; y = 20; }
+      else if (corner === 'FR') { x = 195; y = 20; }
+      else if (corner === 'RL') { x = 25; y = 210; }
+      else if (corner === 'RR') { x = 195; y = 210; }
+
+      addLog(`[TRAMMING] Moving cutter toolhead to ${corner} corner (X=${x}, Y=${y} mm)...`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      fetch(`/api/jog_absolute?x=${x}&y=${y}&z=0.0`, { signal: controller.signal })
+        .then(r => r.json())
+        .then(data => addLog(data.message))
+        .catch(err => addLog(`[ERROR] Corner jog failed: ${err.message}`))
+        .finally(() => clearTimeout(timeoutId));
     }
 
     function lockMark(idx) {
@@ -1767,6 +1795,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 resp = {"status": "error", "message": f"Jog failed: {e}"}
 
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/jog_absolute":
+            x = float(query.get("x", ["25"])[0])
+            y = float(query.get("y", ["20"])[0])
+            z = float(query.get("z", ["0"])[0])
+
+            try:
+                client = get_moonraker_client()
+                gcode = f"G90\nG0 X{x:.1f} Y{y:.1f} Z{z:.1f} F3000"
+                success = client.send_gcode(gcode)
+                msg = f"Jogged toolhead to absolute corner X={x:.1f}, Y={y:.1f}, Z={z:.1f} mm."
+            except Exception:
+                msg = f"[MOCK] Simulated jog to absolute corner X={x:.1f}, Y={y:.1f}, Z={z:.1f} mm."
+
+            resp = {"status": "ok", "message": msg}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
