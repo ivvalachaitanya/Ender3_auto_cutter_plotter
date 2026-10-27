@@ -4,7 +4,7 @@
   "blade_offset_mm": 0.35,
   "camera_offset_x_mm": 25,
   "camera_offset_y_mm": 0,
-  "mm_per_pixel": 0.05,
+  "mm_per_pixel": 0.0293,
   "z_safe_mm": 5,
   "z_scan_mm": 20,
   "z_cut_mm": 0,
@@ -15,16 +15,16 @@
   "crowsnest_url": "http://192.168.1.20/webcam/?action=stream",
   "nominal_fiducials": [
     [
-      5.0,
-      220.0
+      3.345,
+      221.963
     ],
     [
-      173.0,
-      224.0
+      172.715,
+      223.347
     ],
     [
-      8.0,
-      34.0
+      4.526,
+      32.11
     ]
   ],
   "design_fiducials": [
