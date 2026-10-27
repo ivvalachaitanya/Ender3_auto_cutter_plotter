@@ -612,11 +612,16 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <!-- Auto Mode Controls -->
         <div id="auto-align-controls" class="space-y-2">
-          <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Auto-Scan ArUco Fiducials</button>
-          <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
-            <input type="checkbox" id="auto-search-check" checked class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
-            <span>Autonomous Spiral Search & Servoing (fallback)</span>
-          </label>
+          <div>
+            <label class="text-[11px] text-slate-400 block mb-1">Search Strategy & Speed Profile:</label>
+            <select id="search-mode-select" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-purple-300 font-mono">
+              <option value="auto" selected>⚡ Auto-Cascade (Fastest ➔ Spiral ➔ Deep)</option>
+              <option value="fast">🚀 Turbo / Direct (Fastest ~5s, exact hit)</option>
+              <option value="spiral">🌀 Adaptive Spiral (Standard ~15s, local expansion)</option>
+              <option value="exhaustive">🔍 Exhaustive Bed Sweep (Deep ~45s, arbitrary placement)</option>
+            </select>
+          </div>
+          <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>
           <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
             <input type="checkbox" id="force-home-check" class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
             <span>Force G28 homing (uncheck to skip if already homed)</span>
@@ -1208,12 +1213,12 @@ HTML_PAGE = """<!DOCTYPE html>
     function runScan() {
       const file = document.getElementById('svg-file').value;
       const cam = document.getElementById('camera-select').value;
+      const searchMode = document.getElementById('search-mode-select') ? document.getElementById('search-mode-select').value : 'auto';
       const forceHome = document.getElementById('force-home-check') ? document.getElementById('force-home-check').checked : false;
-      const autoSearch = document.getElementById('auto-search-check') ? document.getElementById('auto-search-check').checked : true;
-      addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}' (Auto-Search: ${autoSearch}, Force Home: ${forceHome})...`);
+      addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}' (Strategy: ${searchMode.toUpperCase()}, Force Home: ${forceHome})...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/scan?file=${file}&camera=${cam}&force_home=${forceHome ? '1' : '0'}&auto_search=${autoSearch ? '1' : '0'}`, { method: 'POST', signal: controller.signal })
+      fetch(`/api/scan?file=${file}&camera=${cam}&force_home=${forceHome ? '1' : '0'}&search_mode=${searchMode}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1884,15 +1889,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             cam_source = query.get("camera", ["crowsnest"])[0]
             dry_flag = query.get("dry", [""])[0]
             force_home = query.get("force_home", ["0"])[0]
-            auto_search = query.get("auto_search", ["1"])[0]
+            search_mode = query.get("search_mode", ["auto"])[0]
 
             cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
 
             if force_home == "1" or force_home == "true":
                 cmd.append("--force-home")
 
-            if auto_search == "0" or auto_search == "false":
-                cmd.append("--no-auto-search")
+            cmd.extend(["--search-mode", search_mode])
 
             cfg = load_config()
             moonraker_url = cfg.get("moonraker_url", "http://localhost:7125")

@@ -82,6 +82,13 @@ def parse_args():
     parser.add_argument("--f-travel", type=float, default=cfg.get("f_travel_mm_min", 3000.0), help="Travel feedrate (mm/min).")
 
     # Execution flags
+    parser.add_argument(
+        "--search-mode",
+        type=str,
+        choices=["auto", "fast", "spiral", "exhaustive"],
+        default=cfg.get("search_mode", "auto"),
+        help="Fiducial search preference: 'auto' (Fastest -> Spiral -> Deep cascade), 'fast' (Turbo direct ~5s), 'spiral' (Adaptive ~15s), 'exhaustive' (Full-bed sweep ~45s).",
+    )
     parser.add_argument("--no-auto-search", action="store_true", help="Disable autonomous spiral search and rigid geometric projection.")
     parser.add_argument("--force-home", action="store_true", help="Force printer G28 homing even if axes are already homed.")
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
@@ -183,6 +190,7 @@ def main():
             camera_offset_x=args.camera_offset_x,
             camera_offset_y=args.camera_offset_y,
             mm_per_pixel=args.mm_per_pixel,
+            search_mode=args.search_mode,
         )
         try:
             cfg["nominal_fiducials"] = measured_gantry_points.tolist()

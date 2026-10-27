@@ -340,6 +340,7 @@ class FiducialSearcher:
         mm_per_pixel: float = 0.0293,
         max_iters: int = 2,
         settle_seconds: float = 0.35,
+        expected_id: Optional[int] = None,
     ) -> Optional[Tuple[float, float, Tuple[float, float]]]:
         """
         Perform iterative visual servo micro-jogging to bring marker to exact optical center.
@@ -353,7 +354,7 @@ class FiducialSearcher:
         time.sleep(settle_seconds)
 
         frame = camera_client.get_frame()
-        pt = detector.detect(frame)
+        pt = detector.detect(frame, expected_id=expected_id)
         if pt is None:
             return None
 
@@ -379,7 +380,7 @@ class FiducialSearcher:
             curr_x, curr_y = adj_x, adj_y
             try:
                 new_frame = camera_client.get_frame()
-                new_pt = detector.detect(new_frame)
+                new_pt = detector.detect(new_frame, expected_id=expected_id)
                 if new_pt is not None:
                     pt = new_pt
             except Exception:
@@ -403,6 +404,7 @@ class FiducialSearcher:
         step_mm: float = 14.0,
         max_rings: int = 3,
         settle_seconds: float = 0.35,
+        expected_id: Optional[int] = None,
     ) -> Optional[Tuple[float, float, Tuple[float, float]]]:
         """
         Search for a fiducial starting at (start_x, start_y).
@@ -437,9 +439,9 @@ class FiducialSearcher:
                     logger.warning("Failed to grab camera frame during search: %s", e)
                     continue
 
-                pt = detector.detect(frame)
+                pt = detector.detect(frame, expected_id=expected_id)
                 if pt is not None:
-                    logger.info("Fiducial marker spotted at gantry (X=%.2f, Y=%.2f)! Centering...", target_x, target_y)
+                    logger.info("Fiducial marker (ID=%s) spotted at gantry (X=%.2f, Y=%.2f)! Centering...", expected_id, target_x, target_y)
                     return FiducialSearcher.center_marker(
                         moonraker_client=moonraker_client,
                         camera_client=camera_client,
@@ -451,6 +453,7 @@ class FiducialSearcher:
                         bed_max_y=bed_max_y,
                         mm_per_pixel=mm_per_pixel,
                         settle_seconds=settle_seconds,
+                        expected_id=expected_id,
                     )
 
             # Advance spiral to next hop
@@ -467,6 +470,81 @@ class FiducialSearcher:
         return None
 
     @staticmethod
+    def sweep_bed_quadrants(
+        moonraker_client,
+        camera_client,
+        detector: FiducialDetector,
+        z_scan: float = 20.0,
+        bed_max_x: float = 235.0,
+        bed_max_y: float = 235.0,
+        mm_per_pixel: float = 0.0293,
+        settle_seconds: float = 0.35,
+    ) -> Optional[Tuple[int, float, float, Tuple[float, float]]]:
+        """
+        Sweep strategic bed vantage points across all quadrants until any fiducial is spotted.
+
+        :return: (marker_id, actual_x, actual_y, (u, v)) or None
+        """
+        sweep_points = [
+            # Quadrant 1: Rear-Left (most standard placement)
+            (5.0, 220.0),
+            (35.0, 220.0),
+            (20.0, 185.0),
+            # Quadrant 2: Rear-Right
+            (173.0, 220.0),
+            (195.0, 220.0),
+            (170.0, 185.0),
+            # Quadrant 3: Front-Left
+            (5.0, 35.0),
+            (35.0, 35.0),
+            (20.0, 70.0),
+            # Quadrant 4: Front-Right
+            (173.0, 35.0),
+            (195.0, 35.0),
+            # Center Bed
+            (115.0, 115.0),
+            (115.0, 185.0),
+            (115.0, 45.0),
+        ]
+
+        logger.info("[EXHAUSTIVE SWEEP] Probing %d strategic bed vantage points across all quadrants...", len(sweep_points))
+        for idx, (probe_x, probe_y) in enumerate(sweep_points):
+            target_x = max(0.0, min(bed_max_x, probe_x))
+            target_y = max(0.0, min(bed_max_y, probe_y))
+
+            moonraker_client.jog_to(x=target_x, y=target_y, z=z_scan, feedrate=4500.0, wait_finish=True)
+            time.sleep(settle_seconds)
+
+            try:
+                frame = camera_client.get_frame()
+            except Exception as e:
+                logger.warning("Frame grab failed during bed sweep: %s", e)
+                continue
+
+            markers = detector.detect_aruco_markers(frame)
+            if markers:
+                marker_id, (u, v) = next(iter(markers.items()))
+                logger.info("[EXHAUSTIVE SWEEP] Spotted ArUco ID %d at gantry (%.1f, %.1f)! Centering...", marker_id, target_x, target_y)
+                centered = FiducialSearcher.center_marker(
+                    moonraker_client=moonraker_client,
+                    camera_client=camera_client,
+                    detector=detector,
+                    gantry_x=target_x,
+                    gantry_y=target_y,
+                    z_scan=z_scan,
+                    bed_max_x=bed_max_x,
+                    bed_max_y=bed_max_y,
+                    mm_per_pixel=mm_per_pixel,
+                    settle_seconds=settle_seconds,
+                )
+                if centered is not None:
+                    act_x, act_y, pt = centered
+                    return marker_id, act_x, act_y, pt
+
+        logger.warning("[EXHAUSTIVE SWEEP] Bed quadrant sweep completed with 0 detections.")
+        return None
+
+    @staticmethod
     def discover_all_fiducials(
         moonraker_client,
         camera_client,
@@ -479,20 +557,23 @@ class FiducialSearcher:
         camera_offset_x: float = 25.0,
         camera_offset_y: float = 0.0,
         mm_per_pixel: float = 0.0293,
+        search_mode: str = "auto",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Full Autonomous 3-Fiducial Discovery & Visual Servoing Alignment Pipeline.
+        Autonomous 3-Fiducial Discovery & Visual Servoing Alignment Pipeline with Speed Preferences.
 
-        1. Discovers & centers Fiducial #1 (Rear-Left) via spiral search around seed.
-        2. Projects design vector D12 to predict Fiducial #2 (Rear-Right), searches & centers.
-        3. Computes physical sheet scale and rotation angle from P12 vector.
-        4. Projects exact rigid position for Fiducial #3 (Front-Left), centers with 0 hops.
+        Search Modes:
+        - 'fast': Preference 1 (Turbo / Direct) - 0-hop single-shot hit at cached positions (~5s).
+        - 'spiral': Preference 2 (Adaptive Spiral) - Local expanding spiral search + rigid projection (~15s).
+        - 'exhaustive': Preference 3 (Exhaustive Sweep) - Global bed quadrant sweep for arbitrary placement (~45s).
+        - 'auto': Cascading Speed Priority: Tries Preference 1 -> if missed, escalates to Preference 2 -> if missed, escalates to Preference 3.
 
         :return: (measured_bed_points (Nx2), measured_gantry_points (Nx2))
         """
         import math
+        mode = (search_mode or "auto").lower().strip()
         logger.info("======================================================")
-        logger.info("Starting Autonomous Fiducial Discovery & Alignment")
+        logger.info("Autonomous Fiducial Engine | Strategy: '%s'", mode.upper())
         logger.info("Design Fiducials: %s", design_fiducials.tolist())
         logger.info("======================================================")
 
@@ -500,140 +581,200 @@ class FiducialSearcher:
         d2 = design_fiducials[1]
         d3 = design_fiducials[2]
 
-        # -------------------------------------------------------------
-        # Step 1: Discover & Center Fiducial #1 (Rear-Left)
-        # -------------------------------------------------------------
+        def try_lock_three_markers(
+            start_x1: float,
+            start_y1: float,
+            max_rings_m1: int,
+            max_rings_m2: int,
+            max_rings_m3: int,
+        ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+            """Helper to attempt 3-marker lock with given spiral search tolerances."""
+            exp_id_1 = 0 if detector.fiducial_type == "aruco" else None
+            exp_id_2 = 1 if detector.fiducial_type == "aruco" else None
+            exp_id_3 = 2 if detector.fiducial_type == "aruco" else None
+
+            # Step 1: Discover & Center Fiducial #1 (Rear-Left)
+            res1 = FiducialSearcher.search_and_center(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                start_x=start_x1,
+                start_y=start_y1,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+                max_rings=max_rings_m1,
+                expected_id=exp_id_1,
+            )
+            if res1 is None:
+                return None
+
+            gantry_x1, gantry_y1, pt1 = res1
+            bed_x1, bed_y1 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt1[0], pixel_v=pt1[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x1, camera_gantry_y=gantry_y1,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("Fiducial #1 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x1, bed_y1)
+
+            # Step 2: Predict & Center Fiducial #2 (Rear-Right)
+            d12_x = d2[0] - d1[0]
+            d12_y = d2[1] - d1[1]
+            pred_gantry_x2 = max(0.0, min(bed_max_x, gantry_x1 + d12_x))
+            pred_gantry_y2 = max(0.0, min(bed_max_y, gantry_y1 + d12_y))
+
+            res2 = FiducialSearcher.search_and_center(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                start_x=pred_gantry_x2,
+                start_y=pred_gantry_y2,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+                max_rings=max_rings_m2,
+                expected_id=exp_id_2,
+            )
+            if res2 is None:
+                return None
+
+            gantry_x2, gantry_y2, pt2 = res2
+            bed_x2, bed_y2 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt2[0], pixel_v=pt2[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x2, camera_gantry_y=gantry_y2,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("Fiducial #2 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x2, bed_y2)
+
+            # Step 3: Rigid Projection & Centering for Fiducial #3 (Front-Left)
+            P12_x = gantry_x2 - gantry_x1
+            P12_y = gantry_y2 - gantry_y1
+            dist_d12 = math.hypot(d12_x, d12_y)
+            dist_p12 = math.hypot(P12_x, P12_y)
+
+            scale_factor = dist_p12 / max(1.0, dist_d12)
+            theta_d = math.atan2(d12_y, d12_x)
+            theta_p = math.atan2(P12_y, P12_x)
+            d_theta = theta_p - theta_d
+
+            logger.info("Sheet Geometry Solved: Scale=%.4f, Rotation=%.2f°", scale_factor, math.degrees(d_theta))
+
+            d13_x = d3[0] - d1[0]
+            d13_y = d3[1] - d1[1]
+
+            proj_dx = scale_factor * (d13_x * math.cos(d_theta) - d13_y * math.sin(d_theta))
+            proj_dy = scale_factor * (d13_x * math.sin(d_theta) + d13_y * math.cos(d_theta))
+
+            pred_gantry_x3 = max(0.0, min(bed_max_x, gantry_x1 + proj_dx))
+            pred_gantry_y3 = max(0.0, min(bed_max_y, gantry_y1 + proj_dy))
+
+            res3 = FiducialSearcher.search_and_center(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                start_x=pred_gantry_x3,
+                start_y=pred_gantry_y3,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+                max_rings=max_rings_m3,
+                expected_id=exp_id_3,
+            )
+            if res3 is None:
+                return None
+
+            gantry_x3, gantry_y3, pt3 = res3
+            bed_x3, bed_y3 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt3[0], pixel_v=pt3[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x3, camera_gantry_y=gantry_y3,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("Fiducial #3 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x3, bed_y3)
+
+            measured_bed = np.array([[bed_x1, bed_y1], [bed_x2, bed_y2], [bed_x3, bed_y3]], dtype=np.float64)
+            measured_gantry = np.array([[gantry_x1, gantry_y1], [gantry_x2, gantry_y2], [gantry_x3, gantry_y3]], dtype=np.float64)
+            return measured_bed, measured_gantry
+
+        # Establish initial seed coordinate for Marker 1
         if nominal_fiducials is not None and len(nominal_fiducials) >= 1:
-            start_x1 = nominal_fiducials[0][0]
-            start_y1 = nominal_fiducials[0][1]
+            seed_x1 = nominal_fiducials[0][0]
+            seed_y1 = nominal_fiducials[0][1]
         else:
-            start_x1 = max(0.0, min(bed_max_x, d1[0] - camera_offset_x))
-            start_y1 = max(0.0, min(bed_max_y, d1[1] - camera_offset_y))
-
-        logger.info("[AUTONOMOUS SEARCH] Step 1/3: Locating Fiducial #1 around (X=%.2f, Y=%.2f)...", start_x1, start_y1)
-        res1 = FiducialSearcher.search_and_center(
-            moonraker_client=moonraker_client,
-            camera_client=camera_client,
-            detector=detector,
-            start_x=start_x1,
-            start_y=start_y1,
-            z_scan=z_scan,
-            bed_max_x=bed_max_x,
-            bed_max_y=bed_max_y,
-            mm_per_pixel=mm_per_pixel,
-            max_rings=3,
-        )
-        if res1 is None:
-            raise RuntimeError("Autonomous search failed to locate Fiducial #1 on bed.")
-
-        gantry_x1, gantry_y1, pt1 = res1
-        bed_x1, bed_y1 = TransformEstimator.pixel_to_bed_space(
-            pixel_u=pt1[0], pixel_v=pt1[1],
-            frame_width=640, frame_height=480,
-            camera_gantry_x=gantry_x1, camera_gantry_y=gantry_y1,
-            mm_per_pixel=mm_per_pixel,
-            camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
-        )
-        logger.info("[AUTONOMOUS SEARCH] -> Fiducial #1 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x1, bed_y1)
+            seed_x1 = max(0.0, min(bed_max_x, d1[0] - camera_offset_x))
+            seed_y1 = max(0.0, min(bed_max_y, d1[1] - camera_offset_y))
 
         # -------------------------------------------------------------
-        # Step 2: Predict, Search & Center Fiducial #2 (Rear-Right)
+        # Preference 1: Turbo / Fast (Direct Hits Only, ~5s)
         # -------------------------------------------------------------
-        d12_x = d2[0] - d1[0]
-        d12_y = d2[1] - d1[1]
-        pred_gantry_x2 = max(0.0, min(bed_max_x, gantry_x1 + d12_x))
-        pred_gantry_y2 = max(0.0, min(bed_max_y, gantry_y1 + d12_y))
-
-        logger.info("[AUTONOMOUS SEARCH] Step 2/3: Predicting Fiducial #2 at gantry (X=%.2f, Y=%.2f)...", pred_gantry_x2, pred_gantry_y2)
-        res2 = FiducialSearcher.search_and_center(
-            moonraker_client=moonraker_client,
-            camera_client=camera_client,
-            detector=detector,
-            start_x=pred_gantry_x2,
-            start_y=pred_gantry_y2,
-            z_scan=z_scan,
-            bed_max_x=bed_max_x,
-            bed_max_y=bed_max_y,
-            mm_per_pixel=mm_per_pixel,
-            max_rings=2,
-        )
-        if res2 is None:
-            raise RuntimeError("Autonomous search failed to locate Fiducial #2 on bed.")
-
-        gantry_x2, gantry_y2, pt2 = res2
-        bed_x2, bed_y2 = TransformEstimator.pixel_to_bed_space(
-            pixel_u=pt2[0], pixel_v=pt2[1],
-            frame_width=640, frame_height=480,
-            camera_gantry_x=gantry_x2, camera_gantry_y=gantry_y2,
-            mm_per_pixel=mm_per_pixel,
-            camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
-        )
-        logger.info("[AUTONOMOUS SEARCH] -> Fiducial #2 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x2, bed_y2)
+        if mode in ("auto", "fast"):
+            logger.info("🚀 [PREFERENCE 1: TURBO/FAST] Probing direct nominal coordinates...")
+            res_fast = try_lock_three_markers(seed_x1, seed_y1, max_rings_m1=0, max_rings_m2=0, max_rings_m3=0)
+            if res_fast is not None:
+                logger.info("🚀 [PREFERENCE 1: TURBO/FAST] Succeeded! All 3 fiducials locked in 3 direct shots (~5s)!")
+                return res_fast
+            elif mode == "fast":
+                raise RuntimeError("Turbo/Fast search failed: fiducial markers not visible at direct nominal positions.")
+            logger.info("[PREFERENCE 1: TURBO/FAST] Direct hit missed. Escalating to Preference 2 (Adaptive Spiral)...")
 
         # -------------------------------------------------------------
-        # Step 3: Solve Rigid Body Transform & Predict Fiducial #3 (Front-Left)
+        # Preference 2: Adaptive Spiral (Local Expansion, ~15s)
         # -------------------------------------------------------------
-        P12_x = gantry_x2 - gantry_x1
-        P12_y = gantry_y2 - gantry_y1
-        dist_d12 = math.hypot(d12_x, d12_y)
-        dist_p12 = math.hypot(P12_x, P12_y)
+        if mode in ("auto", "spiral"):
+            logger.info("🌀 [PREFERENCE 2: ADAPTIVE SPIRAL] Expanding spiral search around seed (X=%.1f, Y=%.1f)...", seed_x1, seed_y1)
+            res_spiral = try_lock_three_markers(seed_x1, seed_y1, max_rings_m1=3, max_rings_m2=2, max_rings_m3=1)
+            if res_spiral is not None:
+                logger.info("⚡ [PREFERENCE 2: ADAPTIVE SPIRAL] Succeeded! Spiral discovery & rigid lock completed in ~15s!")
+                return res_spiral
+            elif mode == "spiral":
+                raise RuntimeError("Adaptive Spiral search exhausted without locating fiducials in local region.")
+            logger.info("[PREFERENCE 2: ADAPTIVE SPIRAL] Spiral search exhausted. Escalating to Preference 3 (Exhaustive Sweep)...")
 
-        scale_factor = dist_p12 / max(1.0, dist_d12)
-        theta_d = math.atan2(d12_y, d12_x)
-        theta_p = math.atan2(P12_y, P12_x)
-        d_theta = theta_p - theta_d
+        # -------------------------------------------------------------
+        # Preference 3: Exhaustive Bed Sweep (Deep Discovery, ~45s)
+        # -------------------------------------------------------------
+        if mode in ("auto", "exhaustive"):
+            logger.info("🔍 [PREFERENCE 3: EXHAUSTIVE SWEEP] Sweeping bed quadrants for unconstrained placement...")
+            sweep_res = FiducialSearcher.sweep_bed_quadrants(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+            )
+            if sweep_res is not None:
+                marker_id, act_x, act_y, pt = sweep_res
+                # Reverse project Marker 1 seed from whichever marker was spotted
+                if marker_id == 1:
+                    cand_x1 = act_x - (d2[0] - d1[0])
+                    cand_y1 = act_y - (d2[1] - d1[1])
+                elif marker_id == 2:
+                    cand_x1 = act_x - (d3[0] - d1[0])
+                    cand_y1 = act_y - (d3[1] - d1[1])
+                else:
+                    cand_x1 = act_x
+                    cand_y1 = act_y
 
-        logger.info("[AUTONOMOUS SEARCH] Sheet Geometry Solved: Scale=%.4f, Rotation=%.2f°", scale_factor, math.degrees(d_theta))
+                cand_x1 = max(0.0, min(bed_max_x, cand_x1))
+                cand_y1 = max(0.0, min(bed_max_y, cand_y1))
 
-        # Project D13 vector with exact scale and rotation
-        d13_x = d3[0] - d1[0]
-        d13_y = d3[1] - d1[1]
+                logger.info("🔍 [PREFERENCE 3] Anchor acquired (ID %d). Locking all 3 markers from (X=%.1f, Y=%.1f)...", marker_id, cand_x1, cand_y1)
+                res_deep = try_lock_three_markers(cand_x1, cand_y1, max_rings_m1=2, max_rings_m2=2, max_rings_m3=1)
+                if res_deep is not None:
+                    logger.info("🎯 [PREFERENCE 3: EXHAUSTIVE SWEEP] Succeeded! Full bed recovery complete!")
+                    return res_deep
 
-        proj_dx = scale_factor * (d13_x * math.cos(d_theta) - d13_y * math.sin(d_theta))
-        proj_dy = scale_factor * (d13_x * math.sin(d_theta) + d13_y * math.cos(d_theta))
-
-        pred_gantry_x3 = max(0.0, min(bed_max_x, gantry_x1 + proj_dx))
-        pred_gantry_y3 = max(0.0, min(bed_max_y, gantry_y1 + proj_dy))
-
-        logger.info("[AUTONOMOUS SEARCH] Step 3/3: Rigid Projection for Fiducial #3 -> Target Gantry (X=%.2f, Y=%.2f)...", pred_gantry_x3, pred_gantry_y3)
-        res3 = FiducialSearcher.search_and_center(
-            moonraker_client=moonraker_client,
-            camera_client=camera_client,
-            detector=detector,
-            start_x=pred_gantry_x3,
-            start_y=pred_gantry_y3,
-            z_scan=z_scan,
-            bed_max_x=bed_max_x,
-            bed_max_y=bed_max_y,
-            mm_per_pixel=mm_per_pixel,
-            max_rings=1,
-        )
-        if res3 is None:
-            raise RuntimeError("Autonomous search failed to locate Fiducial #3 on bed.")
-
-        gantry_x3, gantry_y3, pt3 = res3
-        bed_x3, bed_y3 = TransformEstimator.pixel_to_bed_space(
-            pixel_u=pt3[0], pixel_v=pt3[1],
-            frame_width=640, frame_height=480,
-            camera_gantry_x=gantry_x3, camera_gantry_y=gantry_y3,
-            mm_per_pixel=mm_per_pixel,
-            camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
-        )
-        logger.info("[AUTONOMOUS SEARCH] -> Fiducial #3 LOCKED at Bed (X=%.3f, Y=%.3f)", bed_x3, bed_y3)
-
-        measured_bed_pts = np.array([
-            [bed_x1, bed_y1],
-            [bed_x2, bed_y2],
-            [bed_x3, bed_y3],
-        ], dtype=np.float64)
-
-        measured_gantry_pts = np.array([
-            [gantry_x1, gantry_y1],
-            [gantry_x2, gantry_y2],
-            [gantry_x3, gantry_y3],
-        ], dtype=np.float64)
-
-        return measured_bed_pts, measured_gantry_pts
+        raise RuntimeError(f"Autonomous fiducial search failed under mode '{mode}'. No markers could be locked on bed.")
 
 
 

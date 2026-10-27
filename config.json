@@ -13,18 +13,19 @@
   "f_travel_mm_min": 3000,
   "moonraker_url": "http://192.168.1.20:7125",
   "crowsnest_url": "http://192.168.1.20/webcam/?action=stream",
+  "search_mode": "auto",
   "nominal_fiducials": [
     [
-      3.345,
-      221.963
+      4.766,
+      223.758
     ],
     [
-      172.715,
-      223.347
+      174.114,
+      225.846
     ],
     [
-      4.526,
-      32.11
+      6.719,
+      33.945
     ]
   ],
   "design_fiducials": [

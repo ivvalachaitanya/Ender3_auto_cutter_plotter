@@ -9,6 +9,7 @@ Provides interface for:
 import logging
 import time
 from typing import Dict, List, Optional, Tuple, Union
+import urllib.request
 import numpy as np
 import requests
 
@@ -214,22 +215,48 @@ class CameraClient:
         if cv2 is None:
             raise RuntimeError("OpenCV (cv2) is not installed. Required for image processing.")
 
-        # Attempt 1: HTTP Snapshot stream
+        # Attempt 1: HTTP Stream / Snapshot
         if self.snapshot_url:
             urls_to_try = [self.snapshot_url]
             if "action=stream" in self.snapshot_url:
-                urls_to_try.insert(0, self.snapshot_url.replace("action=stream", "action=snapshot"))
+                urls_to_try.append(self.snapshot_url.replace("action=stream", "action=snapshot"))
+            elif "action=snapshot" in self.snapshot_url:
+                urls_to_try.append(self.snapshot_url.replace("action=snapshot", "action=stream"))
 
             for url in urls_to_try:
                 try:
-                    resp = self.session.get(url, timeout=self.timeout)
-                    if resp.status_code == 200 and len(resp.content) > 0:
-                        img_array = np.frombuffer(resp.content, dtype=np.uint8)
-                        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                        if frame is not None and frame.size > 0:
-                            return frame
-                except requests.RequestException as e:
-                    logger.warning("Crowsnest HTTP snapshot request to '%s' failed (%s). Trying local fallback...", url, e)
+                    # Stream URL: fast MJPEG delimiter frame extraction (extract latest frame in buffer)
+                    if "action=stream" in url:
+                        req = urllib.request.Request(url, headers={"User-Agent": "CutterStudio/1.0"})
+                        with urllib.request.urlopen(req, timeout=2.5) as stream_resp:
+                            buf = b""
+                            for _ in range(35):
+                                chunk = stream_resp.read(2048)
+                                if not chunk:
+                                    break
+                                buf += chunk
+
+                            # Find latest complete JPEG frame in buffer to avoid stale images
+                            starts = [i for i in range(len(buf) - 1) if buf[i:i+2] == b"\xff\xd8"]
+                            ends = [i for i in range(len(buf) - 1) if buf[i:i+2] == b"\xff\xd9"]
+
+                            for s in reversed(starts):
+                                valid_ends = [e for e in ends if e > s]
+                                if valid_ends:
+                                    e = valid_ends[0]
+                                    jpg = buf[s : e + 2]
+                                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                    if frame is not None and frame.size > 0:
+                                        return frame
+                    else:
+                        resp = self.session.get(url, timeout=1.5)
+                        if resp.status_code == 200 and len(resp.content) > 0:
+                            img_array = np.frombuffer(resp.content, dtype=np.uint8)
+                            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            if frame is not None and frame.size > 0:
+                                return frame
+                except Exception as e:
+                    logger.debug("Camera frame grab failed for %s: %s", url, e)
 
         # Attempt 2: Local OpenCV VideoCapture fallback
         cap = cv2.VideoCapture(self.camera_index)
