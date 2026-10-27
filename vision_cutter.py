@@ -91,6 +91,8 @@ def parse_args():
     )
     parser.add_argument("--no-auto-search", action="store_true", help="Disable autonomous spiral search and rigid geometric projection.")
     parser.add_argument("--force-home", action="store_true", help="Force printer G28 homing even if axes are already homed.")
+    parser.add_argument("--no-upload", action="store_true", help="Skip uploading G-code to Moonraker (useful for scan-only alignment).")
+    parser.add_argument("--use-cached-alignment", action="store_true", help="Reuse previously solved 2D affine matrix from affine_matrix.json if available.")
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
     parser.add_argument("--auto-start", action="store_true", help="Automatically trigger print job via Moonraker after upload.")
     parser.add_argument("--mock", action="store_true", help="Run in mock offline mode (simulates Klipper & camera responses).")
@@ -173,98 +175,139 @@ def main():
         else:
             design_nominal_points = nominal_fiducials
 
-    # Step 3: Discover & Detect Physical Fiducials
-    detector = FiducialDetector(fiducial_type=args.fiducial_type)
+    # Step 3: Discover & Detect Physical Fiducials (or reuse cached affine matrix)
+    M = None
+    measured_bed_points = None
 
-    if not args.mock and not args.no_auto_search:
-        logger.info("Engaging Autonomous Fiducial Discovery & Visual Servoing...")
-        measured_bed_points, measured_gantry_points = FiducialSearcher.discover_all_fiducials(
-            moonraker_client=moonraker,
-            camera_client=camera,
-            detector=detector,
-            design_fiducials=design_nominal_points,
-            nominal_fiducials=nominal_fiducials,
-            z_scan=args.z_scan,
-            bed_max_x=bed_max_x,
-            bed_max_y=bed_max_y,
-            camera_offset_x=args.camera_offset_x,
-            camera_offset_y=args.camera_offset_y,
-            mm_per_pixel=args.mm_per_pixel,
-            search_mode=args.search_mode,
-        )
-        try:
-            cfg["nominal_fiducials"] = measured_gantry_points.tolist()
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            logger.info("Updated nominal_fiducials in config.json with newly centered coordinates.")
-        except Exception as e:
-            logger.warning("Could not persist updated nominal fiducials: %s", e)
-
-        moonraker.jog_to(z=args.z_safe, feedrate=args.f_travel, wait_finish=True)
-    elif not args.mock:
-        # Legacy fixed-coordinate single-shot detection
-        measured_bed_points = []
-        for idx, nominal_pt in enumerate(nominal_fiducials):
-            nom_x, nom_y = nominal_pt[0], nominal_pt[1]
-            target_cam_x = max(0.0, min(bed_max_x, nom_x))
-            target_cam_y = max(0.0, min(bed_max_y, nom_y))
-
-            logger.info("Jogging camera over Fiducial #%d (Search Point: %.2f, %.2f) -> Target Gantry (%.2f, %.2f) at Z=%.1f...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y, args.z_scan)
-            moonraker.jog_to(x=target_cam_x, y=target_cam_y, z=args.z_scan, feedrate=args.f_travel, wait_finish=True)
-            time.sleep(0.5)
-
+    if args.use_cached_alignment:
+        affine_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "affine_matrix.json")
+        if os.path.isfile(affine_file):
             try:
-                frame = camera.get_frame()
-            except Exception as err:
-                logger.error("Failed to capture frame at fiducial #%d: %s", idx + 1, err)
-                sys.exit(1)
+                with open(affine_file, "r", encoding="utf-8") as f:
+                    cached_data = json.load(f)
+                M = np.array(cached_data["matrix"], dtype=np.float64)
+                logger.info("Reusing cached 2D Affine Transformation from '%s' (Scale=%.4f, Rot=%.2f°).", affine_file, cached_data.get("scale", 1.0), cached_data.get("rotation_deg", 0.0))
+            except Exception as e:
+                logger.warning("Could not read cached affine matrix from '%s': %s. Falling back to camera scan.", affine_file, e)
+                M = None
 
-            detected_px = detector.detect(frame)
-            if detected_px is None:
-                logger.error("Failed to detect fiducial marker #%d in camera frame!", idx + 1)
-                sys.exit(1)
+    if M is None:
+        detector = FiducialDetector(fiducial_type=args.fiducial_type)
 
-            frame_h, frame_w = frame.shape[:2]
-            current_x, current_y, _ = moonraker.get_toolhead_position()
-
-            bed_x, bed_y = TransformEstimator.pixel_to_bed_space(
-                pixel_u=detected_px[0],
-                pixel_v=detected_px[1],
-                frame_width=frame_w,
-                frame_height=frame_h,
-                camera_gantry_x=current_x,
-                camera_gantry_y=current_y,
-                mm_per_pixel=args.mm_per_pixel,
+        if not args.mock and not args.no_auto_search:
+            logger.info("Engaging Autonomous Fiducial Discovery & Visual Servoing...")
+            measured_bed_points, measured_gantry_points = FiducialSearcher.discover_all_fiducials(
+                moonraker_client=moonraker,
+                camera_client=camera,
+                detector=detector,
+                design_fiducials=design_nominal_points,
+                nominal_fiducials=nominal_fiducials,
+                z_scan=args.z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
                 camera_offset_x=args.camera_offset_x,
                 camera_offset_y=args.camera_offset_y,
+                mm_per_pixel=args.mm_per_pixel,
+                search_mode=args.search_mode,
             )
-            measured_bed_points.append([bed_x, bed_y])
-            logger.info("Fiducial #%d Measured Bed Coordinate: (X=%.3f, Y=%.3f)", idx + 1, bed_x, bed_y)
+            try:
+                cfg["nominal_fiducials"] = measured_gantry_points.tolist()
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2)
+                logger.info("Updated nominal_fiducials in config.json with newly centered coordinates.")
+            except Exception as e:
+                logger.warning("Could not persist updated nominal fiducials: %s", e)
 
-        moonraker.jog_to(z=args.z_safe, feedrate=args.f_travel, wait_finish=True)
-        measured_bed_points = np.array(measured_bed_points, dtype=np.float64)
-    else:
-        # Mock mode: add camera offset and minor simulated translation
-        measured_bed_points = []
-        for idx, nominal_pt in enumerate(nominal_fiducials):
-            bed_x = nominal_pt[0] + args.camera_offset_x + 0.2
-            bed_y = nominal_pt[1] + args.camera_offset_y + 0.1
-            logger.info("[MOCK] Simulated measured bed coordinate for Fiducial #%d: (%.3f, %.3f)", idx + 1, bed_x, bed_y)
-            measured_bed_points.append([bed_x, bed_y])
-        measured_bed_points = np.array(measured_bed_points, dtype=np.float64)
+            moonraker.jog_to(z=args.z_safe, feedrate=args.f_travel, wait_finish=True)
+        elif not args.mock:
+            # Legacy fixed-coordinate single-shot detection
+            measured_bed_points = []
+            for idx, nominal_pt in enumerate(nominal_fiducials):
+                nom_x, nom_y = nominal_pt[0], nominal_pt[1]
+                target_cam_x = max(0.0, min(bed_max_x, nom_x))
+                target_cam_y = max(0.0, min(bed_max_y, nom_y))
 
-    # Step 4: Compute 2D Rigid Affine Matrix M
-    logger.info("Computing 2D Rigid Affine Transformation matrix...")
-    M = TransformEstimator.compute_affine_matrix(design_nominal_points, measured_bed_points)
+                logger.info("Jogging camera over Fiducial #%d (Search Point: %.2f, %.2f) -> Target Gantry (%.2f, %.2f) at Z=%.1f...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y, args.z_scan)
+                moonraker.jog_to(x=target_cam_x, y=target_cam_y, z=args.z_scan, feedrate=args.f_travel, wait_finish=True)
+                time.sleep(0.5)
+
+                try:
+                    frame = camera.get_frame()
+                except Exception as err:
+                    logger.error("Failed to capture frame at fiducial #%d: %s", idx + 1, err)
+                    sys.exit(1)
+
+                detected_px = detector.detect(frame)
+                if detected_px is None:
+                    logger.error("Failed to detect fiducial marker #%d in camera frame!", idx + 1)
+                    sys.exit(1)
+
+                frame_h, frame_w = frame.shape[:2]
+                current_x, current_y, _ = moonraker.get_toolhead_position()
+
+                bed_x, bed_y = TransformEstimator.pixel_to_bed_space(
+                    pixel_u=detected_px[0],
+                    pixel_v=detected_px[1],
+                    frame_width=frame_w,
+                    frame_height=frame_h,
+                    camera_gantry_x=current_x,
+                    camera_gantry_y=current_y,
+                    mm_per_pixel=args.mm_per_pixel,
+                    camera_offset_x=args.camera_offset_x,
+                    camera_offset_y=args.camera_offset_y,
+                )
+                measured_bed_points.append([bed_x, bed_y])
+                logger.info("Fiducial #%d Measured Bed Coordinate: (X=%.3f, Y=%.3f)", idx + 1, bed_x, bed_y)
+
+            moonraker.jog_to(z=args.z_safe, feedrate=args.f_travel, wait_finish=True)
+            measured_bed_points = np.array(measured_bed_points, dtype=np.float64)
+        else:
+            # Mock mode: add camera offset and minor simulated translation
+            measured_bed_points = []
+            for idx, nominal_pt in enumerate(nominal_fiducials):
+                bed_x = nominal_pt[0] + args.camera_offset_x + 0.2
+                bed_y = nominal_pt[1] + args.camera_offset_y + 0.1
+                logger.info("[MOCK] Simulated measured bed coordinate for Fiducial #%d: (%.3f, %.3f)", idx + 1, bed_x, bed_y)
+                measured_bed_points.append([bed_x, bed_y])
+            measured_bed_points = np.array(measured_bed_points, dtype=np.float64)
+
+        # Step 4: Compute 2D Rigid Affine Matrix M
+        logger.info("Computing 2D Rigid Affine Transformation matrix...")
+        M = TransformEstimator.compute_affine_matrix(design_nominal_points, measured_bed_points)
+
+        # Persist solved affine transformation matrix to affine_matrix.json
+        try:
+            a, b, tx = float(M[0, 0]), float(M[0, 1]), float(M[0, 2])
+            scale = float(math.sqrt(a * a + b * b))
+            angle_deg = float(math.degrees(math.atan2(b, a)))
+            ty = float(M[1, 2])
+
+            affine_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "affine_matrix.json")
+            affine_data = {
+                "file": os.path.basename(args.svg),
+                "matrix": M.tolist(),
+                "scale": scale,
+                "rotation_deg": angle_deg,
+                "translation_mm": [tx, ty],
+                "design_points": design_nominal_points.tolist() if hasattr(design_nominal_points, "tolist") else list(design_nominal_points),
+                "measured_bed_points": measured_bed_points.tolist() if hasattr(measured_bed_points, "tolist") else list(measured_bed_points),
+                "timestamp": time.time(),
+            }
+            with open(affine_path, "w", encoding="utf-8") as f:
+                json.dump(affine_data, f, indent=2)
+            logger.info("Saved 2D Affine Matrix to '%s' (Scale=%.4f, Rot=%.2f°, Tx=%.2f mm, Ty=%.2f mm).", affine_path, scale, angle_deg, tx, ty)
+        except Exception as e:
+            logger.warning("Could not persist affine_matrix.json: %s", e)
 
     # Step 5: Check if input is SVG or PolyCut/JScut G-code File
+    output_filename = args.output
     if args.svg.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
         logger.info("Input file '%s' detected as G-code (PolyCut / JScut / Inkscape).", args.svg)
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
         from gcode_transformer import GCodeTransformer
 
         transformer = GCodeTransformer(matrix=M)
-        success = transformer.transform_gcode_file(args.svg, args.output)
+        success = transformer.transform_gcode_file(args.svg, output_filename)
         if not success:
             logger.error("Failed to apply fiducial compensation to PolyCut G-code file!")
             sys.exit(1)
@@ -307,23 +350,34 @@ def main():
         final_gcode = gcode_gen.generate_gcode(planned_contours)
 
         # Write G-code to local file
-        output_filename = args.output
         with open(output_filename, "w", encoding="utf-8") as f:
             f.write(final_gcode)
         logger.info("Saved final G-code file to '%s'.", output_filename)
 
     # Step 8: Upload to Moonraker & Start Job
+    if args.no_upload:
+        logger.info("======================================================")
+        logger.info("Scan & Alignment Completed Successfully!")
+        logger.info("Aligned G-code saved to '%s' (Moonraker upload skipped).", output_filename)
+        logger.info("======================================================")
+        return
+
     if not args.mock:
         try:
-            remote_path = moonraker.upload_gcode(output_filename)
+            remote_path = moonraker.upload_gcode(output_filename, timeout=60.0)
             logger.info("Successfully uploaded G-code to Moonraker path: '%s'", remote_path)
 
             if args.auto_start:
                 logger.info("Triggering auto-start print job...")
-                moonraker.start_print(output_filename)
+                if not moonraker.start_print(output_filename):
+                    logger.error("Failed to start print job on Moonraker!")
+                    sys.exit(1)
         except Exception as err:
-            logger.error("Failed to upload/start print job on Moonraker: %s", err)
-            sys.exit(1)
+            if args.auto_start:
+                logger.error("Failed to upload/start print job on Moonraker: %s", err)
+                sys.exit(1)
+            else:
+                logger.warning("Alignment and G-code generation succeeded, but Moonraker upload failed: %s. Local output saved to '%s'.", err, output_filename)
     else:
         logger.info("[MOCK] Upload and print trigger step completed.")
 

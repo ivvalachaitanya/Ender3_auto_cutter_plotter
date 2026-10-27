@@ -148,28 +148,41 @@ class MoonrakerClient:
         script = "\n".join(gcode_parts)
         return self.send_gcode(script, timeout=timeout)
 
-    def upload_gcode(self, file_path: str, target_filename: Optional[str] = None) -> str:
+    def upload_gcode(self, file_path: str, target_filename: Optional[str] = None, timeout: float = 60.0) -> str:
         """
         Upload G-code file to Moonraker gcodes directory.
 
         :param file_path: Local path to G-code file
         :param target_filename: Optional override for target filename in Moonraker
+        :param timeout: Upload request timeout in seconds (default: 60.0s to allow for Moonraker G-code analysis)
         :return: Moonraker internal filename
         """
         url = f"{self.base_url}/server/files/upload"
         filename = target_filename or file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        logger.info("Uploading G-code file %s to Moonraker...", filename)
+        logger.info("Uploading G-code file '%s' to Moonraker (timeout=%.1fs)...", filename, timeout)
 
-        try:
-            with open(file_path, "rb") as f:
-                files = {"file": (filename, f, "application/octet-stream")}
-                resp = self.session.post(url, files=files, timeout=self.timeout)
-                resp.raise_for_status()
-                data = resp.json()
-                return data["item"]["path"]
-        except (requests.RequestException, KeyError) as e:
-            logger.error("Failed to upload G-code file to Moonraker: %s", e)
-            raise RuntimeError(f"G-code upload failed: {e}")
+        last_error = None
+        for attempt in range(1, 3):
+            try:
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f, "application/octet-stream")}
+                    resp = self.session.post(url, files=files, timeout=timeout)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    item_path = data.get("item", {}).get("path", filename)
+                    logger.info("Successfully uploaded '%s' to Moonraker path '%s'.", filename, item_path)
+                    return item_path
+            except requests.Timeout as e:
+                last_error = e
+                logger.warning("Upload attempt %d timed out after %.1fs: %s", attempt, timeout, e)
+                if attempt < 2:
+                    time.sleep(1.0)
+            except (requests.RequestException, KeyError) as e:
+                last_error = e
+                logger.error("Failed to upload G-code file to Moonraker: %s", e)
+                break
+
+        raise RuntimeError(f"G-code upload failed: {last_error}")
 
     def start_print(self, filename: str) -> bool:
         """

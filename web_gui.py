@@ -890,7 +890,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function addLog(msg) {
       const box = document.getElementById('log-box');
-      box.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+      if (!msg) return;
+      const lines = String(msg).split('\n');
+      const timeStr = new Date().toLocaleTimeString();
+      lines.forEach(l => {
+        const trimmed = l.trim();
+        if (trimmed) {
+          box.innerHTML += `<div>[${timeStr}] ${trimmed}</div>`;
+        }
+      });
       box.scrollTop = box.scrollHeight;
     }
 
@@ -1224,6 +1232,8 @@ HTML_PAGE = """<!DOCTYPE html>
           addLog(data.message);
           if (data.status === 'error') {
             addLog('[ERROR] Vision scan failed.');
+          } else {
+            addLog('🎉 [SUCCESS] Fiducials located & centered! 2D Affine Matrix solved. Ready to cut in Step 4.');
           }
         })
         .catch(err => addLog(`[ERROR] Scan request failed: ${err.message}`))
@@ -1885,6 +1895,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(resp).encode("utf-8"))
 
         elif parsed.path == "/api/scan" or parsed.path == "/api/cut":
+            is_scan = parsed.path == "/api/scan"
             filename = query.get("file", ["Cut1.svg"])[0]
             cam_source = query.get("camera", ["crowsnest"])[0]
             dry_flag = query.get("dry", [""])[0]
@@ -1892,6 +1903,22 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             search_mode = query.get("search_mode", ["auto"])[0]
 
             cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
+
+            if is_scan:
+                cmd.append("--no-upload")
+            else:
+                # /api/cut: use cached alignment from Step 3 if available, and trigger print
+                affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+                if os.path.isfile(affine_file):
+                    try:
+                        with open(affine_file, "r", encoding="utf-8") as f:
+                            af_data = json.load(f)
+                        # Reuse if for same file or generated within last hour
+                        if af_data.get("file") == filename or (time.time() - af_data.get("timestamp", 0)) < 3600:
+                            cmd.append("--use-cached-alignment")
+                    except Exception:
+                        pass
+                cmd.append("--auto-start")
 
             if force_home == "1" or force_home == "true":
                 cmd.append("--force-home")
@@ -1922,9 +1949,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             try:
                 res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=180)
+                stdout_text = res.stdout.strip()
+                stderr_text = res.stderr.strip()
+                combined_msg = stdout_text or stderr_text or ("Pipeline executed successfully." if res.returncode == 0 else "Pipeline execution failed.")
+
                 resp = {
                     "status": "ok" if res.returncode == 0 else "error",
-                    "message": f"Pipeline executed successfully for {filename}." if res.returncode == 0 else (res.stderr or res.stdout or "Pipeline execution failed."),
+                    "message": combined_msg,
                 }
             except Exception as err:
                 resp = {"status": "error", "message": str(err)}
