@@ -1897,6 +1897,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             elif cam_source == "mock":
                 cmd.append("--mock")
 
+            z_scan = cfg.get("z_scan_mm", 20.0)
+            cmd.extend(["--z-scan", str(z_scan)])
+
             z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
             if z_lift_swivel > 0.0:
                 cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])

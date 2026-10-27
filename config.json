@@ -1,11 +1,12 @@
 {
-  "bed_width_mm": 220,
-  "bed_height_mm": 220,
+  "bed_width_mm": 235,
+  "bed_height_mm": 235,
   "blade_offset_mm": 0.35,
   "camera_offset_x_mm": 25,
   "camera_offset_y_mm": 0,
   "mm_per_pixel": 0.05,
   "z_safe_mm": 5,
+  "z_scan_mm": 20,
   "z_cut_mm": 0,
   "z_lift_swivel_mm": 0,
   "f_cut_mm_min": 1200,
@@ -15,14 +16,14 @@
   "nominal_fiducials": [
     [
       5.0,
-      224.0
+      220.0
     ],
     [
       173.0,
       224.0
     ],
     [
-      5.0,
+      8.0,
       34.0
     ]
   ],

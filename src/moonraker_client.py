@@ -117,7 +117,7 @@ class MoonrakerClient:
         time.sleep(wait_seconds)
         return True
 
-    def jog_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: float = 3000.0, timeout: float = 30.0) -> bool:
+    def jog_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: float = 3000.0, timeout: float = 30.0, wait_finish: bool = True) -> bool:
         """
         Jog gantry to absolute coordinates.
 
@@ -126,6 +126,7 @@ class MoonrakerClient:
         :param z: Target Z position in mm
         :param feedrate: Travel speed in mm/min
         :param timeout: Request timeout in seconds
+        :param wait_finish: If True, appends M400 to wait for physical move completion
         :return: True if successful
         """
         gcode_parts = ["G90", f"G0 F{feedrate:.1f}"]
@@ -141,6 +142,8 @@ class MoonrakerClient:
             return True
 
         gcode_parts.append("G0 " + " ".join(move_args))
+        if wait_finish:
+            gcode_parts.append("M400")
         script = "\n".join(gcode_parts)
         return self.send_gcode(script, timeout=timeout)
 

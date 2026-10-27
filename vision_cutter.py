@@ -73,7 +73,8 @@ def parse_args():
         help="JSON string of nominal SVG fiducial coordinates e.g. '[[0,210], [170,210], [0,20]]'",
     )
 
-    # Cutting Parameters
+    # Cutting & Scanning Parameters
+    parser.add_argument("--z-scan", type=float, default=cfg.get("z_scan_mm", 20.0), help="Camera focal scanning Z height in mm (default: 20.0).")
     parser.add_argument("--z-safe", type=float, default=cfg.get("z_safe_mm", 5.0), help="Safe travel Z height (mm).")
     parser.add_argument("--z-cut", type=float, default=cfg.get("z_cut_mm", 0.0), help="Cutting Z depth (mm).")
     parser.add_argument("--z-lift-swivel", type=float, default=cfg.get("z_lift_swivel_mm", 0.0), help="Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = in-plane).")
@@ -150,8 +151,8 @@ def main():
         except Exception:
             pass
 
-    bed_max_x = cfg.get("bed_width_mm", 220.0)
-    bed_max_y = cfg.get("bed_height_mm", 220.0)
+    bed_max_x = cfg.get("bed_width_mm", 235.0)
+    bed_max_y = cfg.get("bed_height_mm", 235.0)
 
     for idx, nominal_pt in enumerate(nominal_fiducials):
         nom_x, nom_y = nominal_pt[0], nominal_pt[1]
@@ -160,10 +161,10 @@ def main():
         target_cam_x = max(0.0, min(bed_max_x, nom_x))
         target_cam_y = max(0.0, min(bed_max_y, nom_y))
 
-        logger.info("Jogging camera over Fiducial #%d (Search Point: %.2f, %.2f) -> Target Gantry (%.2f, %.2f)...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y)
+        logger.info("Jogging camera over Fiducial #%d (Search Point: %.2f, %.2f) -> Target Gantry (%.2f, %.2f) at Z=%.1f...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y, args.z_scan)
 
         if not args.mock:
-            moonraker.jog_to(x=target_cam_x, y=target_cam_y, z=args.z_safe, feedrate=args.f_travel)
+            moonraker.jog_to(x=target_cam_x, y=target_cam_y, z=args.z_scan, feedrate=args.f_travel, wait_finish=True)
             time.sleep(1.0)  # Allow camera/gantry to settle
 
             # Capture frame
@@ -174,7 +175,7 @@ def main():
                 sys.exit(1)
 
             # Detect fiducial in frame
-            detected_px = detector.detect(frame, expected_id=idx)
+            detected_px = detector.detect(frame)
             if detected_px is None:
                 logger.error("Failed to detect fiducial marker #%d in camera frame!", idx + 1)
                 sys.exit(1)
@@ -202,6 +203,9 @@ def main():
 
         measured_bed_points.append([bed_x, bed_y])
         logger.info("Fiducial #%d Measured Bed Coordinate: (X=%.3f, Y=%.3f)", idx + 1, bed_x, bed_y)
+
+    if not args.mock:
+        moonraker.jog_to(z=args.z_safe, feedrate=args.f_travel, wait_finish=True)
 
     measured_bed_points = np.array(measured_bed_points, dtype=np.float64)
 
