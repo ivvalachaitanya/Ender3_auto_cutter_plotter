@@ -560,7 +560,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </button>
           <input type="file" id="file-upload-input" onchange="uploadSelectedFile()" accept=".svg,.gcode,.nc,.gc,.tap" class="hidden">
         </div>
-        <button onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
+        <button id="load-preview-btn" onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
       </div>
 
       <!-- Step 2 -->
@@ -621,7 +621,7 @@ HTML_PAGE = """<!DOCTYPE html>
               <option value="exhaustive">🔍 Exhaustive Bed Sweep (Deep ~45s, arbitrary placement)</option>
             </select>
           </div>
-          <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>
+          <button id="run-scan-btn" onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>
           <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
             <input type="checkbox" id="force-home-check" class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
             <span>Force G28 homing (uncheck to skip if already homed)</span>
@@ -686,14 +686,14 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="checkbox" id="dry-run" class="accent-emerald-500">
         </div>
         <div class="grid grid-cols-2 gap-2 text-xs">
-          <button onclick="runBoundingBoxFrame()" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-[11px] font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
+          <button id="run-frame-btn" onclick="runBoundingBoxFrame()" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-[11px] font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
             <span>🔲 Frame Bounds</span>
           </button>
           <button onclick="downloadGcode()" class="bg-purple-700 hover:bg-purple-600 text-white py-1.5 rounded text-[11px] font-semibold shadow transition-all flex items-center justify-center space-x-1">
             <span>💾 Save G-code</span>
           </button>
         </div>
-        <button onclick="runCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg">🚀 START VINYL CUT</button>
+        <button id="run-cut-btn" onclick="runCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg">🚀 START VINYL CUT</button>
       </div>
     </div>
 
@@ -1194,6 +1194,11 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function loadPreview() {
+      const btn = document.getElementById('load-preview-btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "⏳ Loading Preview...";
+      }
       const file = document.getElementById('svg-file').value;
       addLog(`Loading SVG preview for '${file}'...`);
       const controller = new AbortController();
@@ -1209,7 +1214,13 @@ HTML_PAGE = """<!DOCTYPE html>
           }
         })
         .catch(err => addLog(`[ERROR] Failed to load preview: ${err.message}`))
-        .finally(() => clearTimeout(timeoutId));
+        .finally(() => {
+          clearTimeout(timeoutId);
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "Load File Preview";
+          }
+        });
     }
 
     function openPrintWindow() {
@@ -1219,6 +1230,12 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function runScan() {
+      const btn = document.getElementById('run-scan-btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.className = "w-full bg-purple-900 text-purple-200 font-semibold py-2 rounded text-xs shadow-md cursor-not-allowed animate-pulse";
+        btn.innerHTML = "⏳ Scanning & Centering Fiducials... (Please Wait)";
+      }
       const file = document.getElementById('svg-file').value;
       const cam = document.getElementById('camera-select').value;
       const searchMode = document.getElementById('search-mode-select') ? document.getElementById('search-mode-select').value : 'auto';
@@ -1237,7 +1254,14 @@ HTML_PAGE = """<!DOCTYPE html>
           }
         })
         .catch(err => addLog(`[ERROR] Scan request failed: ${err.message}`))
-        .finally(() => clearTimeout(timeoutId));
+        .finally(() => {
+          clearTimeout(timeoutId);
+          if (btn) {
+            btn.disabled = false;
+            btn.className = "w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md";
+            btn.innerHTML = "📷 Run Autonomous Scan & Align";
+          }
+        });
     }
 
     function onFileSelectionChanged() {
@@ -1331,6 +1355,11 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function runBoundingBoxFrame() {
+      const btn = document.getElementById('run-frame-btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<span>⏳ Tracing Frame...</span>";
+      }
       const file = document.getElementById('svg-file').value;
       addLog(`[FRAME] Tracing outer 4-corner bounding box for '${file}' at Safe Z...`);
       const controller = new AbortController();
@@ -1344,7 +1373,13 @@ HTML_PAGE = """<!DOCTYPE html>
           }
         })
         .catch(err => addLog(`[ERROR] Framing request failed: ${err.message}`))
-        .finally(() => clearTimeout(timeoutId));
+        .finally(() => {
+          clearTimeout(timeoutId);
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "<span>🔲 Frame Bounds</span>";
+          }
+        });
     }
 
     function downloadGcode() {
@@ -1355,6 +1390,12 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function runCut() {
+      const btn = document.getElementById('run-cut-btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.className = "w-full bg-emerald-900 text-emerald-200 font-bold py-2 rounded text-xs shadow-lg cursor-not-allowed animate-pulse";
+        btn.innerHTML = "⏳ Preparing & Sending Job to Cutter...";
+      }
       const file = document.getElementById('svg-file').value;
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
@@ -1366,10 +1407,19 @@ HTML_PAGE = """<!DOCTYPE html>
           addLog(data.message);
           if (data.status === 'error') {
             addLog('[ERROR] Cut job failed to start.');
+          } else {
+            addLog('🎉 [SUCCESS] Cut job sent to Klipper! Cutter is in motion.');
           }
         })
         .catch(err => addLog(`[ERROR] Cut request failed: ${err.message}`))
-        .finally(() => clearTimeout(timeoutId));
+        .finally(() => {
+          clearTimeout(timeoutId);
+          if (btn) {
+            btn.disabled = false;
+            btn.className = "w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg";
+            btn.innerHTML = "🚀 START VINYL CUT";
+          }
+        });
     }
 
     // Auto-refresh cameras & load file list on page load
