@@ -29,9 +29,11 @@ from urllib.parse import parse_qs, urlparse
 try:
     import cv2
     import numpy as np
-except ImportError:
+except ImportError as _err:
     cv2 = None
     np = None
+    print(f"[WARN] OpenCV or NumPy not installed in Python environment ({sys.executable}): {_err}")
+    print("[WARN] Please ensure you run Cutter Studio with Python 3.9 where packages are installed: py -3.9 web_gui.py")
 
 PORT = 5000
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
