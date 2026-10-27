@@ -43,16 +43,18 @@ class MoonrakerClient:
             logger.warning("Moonraker connection check failed: %s", e)
             return False
 
-    def send_gcode(self, script: str) -> bool:
+    def send_gcode(self, script: str, timeout: Optional[float] = None) -> bool:
         """
         Execute a G-code script on Klipper.
 
         :param script: G-code command string or multi-line block
+        :param timeout: Custom timeout in seconds. Defaults to 60.0s for G28 (homing), else self.timeout.
         :return: True if successful, False otherwise
         """
         url = f"{self.base_url}/printer/gcode/script"
+        req_timeout = timeout if timeout is not None else (60.0 if "G28" in script.upper() else self.timeout)
         try:
-            resp = self.session.post(url, json={"script": script}, timeout=self.timeout)
+            resp = self.session.post(url, json={"script": script}, timeout=req_timeout)
             resp.raise_for_status()
             return True
         except requests.RequestException as e:
@@ -76,20 +78,21 @@ class MoonrakerClient:
             logger.error("Failed to query toolhead position: %s", e)
             raise RuntimeError(f"Could not retrieve toolhead position from Moonraker: {e}")
 
-    def home_gantry(self, wait_seconds: float = 10.0) -> bool:
+    def home_gantry(self, wait_seconds: float = 1.0, timeout: float = 60.0) -> bool:
         """
         Execute homing sequence (G28).
 
-        :param wait_seconds: Time to wait after homing command
+        :param wait_seconds: Time to wait after homing completes
+        :param timeout: Maximum timeout for homing in seconds (default: 60.0)
         :return: True if successful
         """
         logger.info("Executing printer homing sequence (G28)...")
-        if not self.send_gcode("G28"):
+        if not self.send_gcode("G28", timeout=timeout):
             return False
         time.sleep(wait_seconds)
         return True
 
-    def jog_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: float = 3000.0) -> bool:
+    def jog_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: float = 3000.0, timeout: float = 30.0) -> bool:
         """
         Jog gantry to absolute coordinates.
 
@@ -97,6 +100,7 @@ class MoonrakerClient:
         :param y: Target Y position in mm
         :param z: Target Z position in mm
         :param feedrate: Travel speed in mm/min
+        :param timeout: Request timeout in seconds
         :return: True if successful
         """
         gcode_parts = ["G90", f"G0 F{feedrate:.1f}"]
@@ -113,7 +117,7 @@ class MoonrakerClient:
 
         gcode_parts.append("G0 " + " ".join(move_args))
         script = "\n".join(gcode_parts)
-        return self.send_gcode(script)
+        return self.send_gcode(script, timeout=timeout)
 
     def upload_gcode(self, file_path: str, target_filename: Optional[str] = None) -> str:
         """

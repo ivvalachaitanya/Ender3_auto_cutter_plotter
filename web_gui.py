@@ -1143,7 +1143,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function refreshCameras() {
       addLog('Scanning attached camera devices...');
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
       fetch('/api/cameras', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
@@ -1175,7 +1175,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const file = document.getElementById('svg-file').value;
       addLog(`Loading SVG preview for '${file}'...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
       fetch(`/api/preview?file=${file}`, { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
@@ -1201,7 +1201,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const cam = document.getElementById('camera-select').value;
       addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}'...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
       fetch(`/api/scan?file=${file}&camera=${cam}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
@@ -1333,7 +1333,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
       fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
@@ -1891,7 +1891,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 cmd.append(dry_flag)
 
             try:
-                res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=120)
+                res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=180)
                 resp = {
                     "status": "ok" if res.returncode == 0 else "error",
                     "message": f"Pipeline executed successfully for {filename}." if res.returncode == 0 else (res.stderr or res.stdout or "Pipeline execution failed."),
