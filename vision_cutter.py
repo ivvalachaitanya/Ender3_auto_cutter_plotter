@@ -20,7 +20,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from moonraker_client import CameraClient, MoonrakerClient
-from vision_detector import FiducialDetector, TransformEstimator
+from vision_detector import FiducialDetector, TransformEstimator, extract_svg_fiducials
 from drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser
 
 # Configure logging
@@ -81,6 +81,7 @@ def parse_args():
     parser.add_argument("--f-travel", type=float, default=cfg.get("f_travel_mm_min", 3000.0), help="Travel feedrate (mm/min).")
 
     # Execution flags
+    parser.add_argument("--force-home", action="store_true", help="Force printer G28 homing even if axes are already homed.")
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
     parser.add_argument("--auto-start", action="store_true", help="Automatically trigger print job via Moonraker after upload.")
     parser.add_argument("--mock", action="store_true", help="Run in mock offline mode (simulates Klipper & camera responses).")
@@ -126,10 +127,13 @@ def main():
 
     # Step 2: Printer Homing
     if not args.mock:
-        logger.info("Homing printer gantry...")
-        if not moonraker.home_gantry():
-            logger.error("Homing sequence failed!")
-            sys.exit(1)
+        if args.force_home or not moonraker.is_homed("xyz"):
+            logger.info("Homing printer gantry (G28)...")
+            if not moonraker.home_gantry(force=True):
+                logger.error("Homing sequence failed!")
+                sys.exit(1)
+        else:
+            logger.info("Printer axes are already homed (XYZ). Skipping redundant G28 homing sequence.")
     else:
         logger.info("[MOCK] Printer gantry homed.")
 
@@ -137,29 +141,26 @@ def main():
     detector = FiducialDetector(fiducial_type=args.fiducial_type)
     measured_bed_points = []
 
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    cfg = {}
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+
+    bed_max_x = cfg.get("bed_width_mm", 220.0)
+    bed_max_y = cfg.get("bed_height_mm", 220.0)
+
     for idx, nominal_pt in enumerate(nominal_fiducials):
         nom_x, nom_y = nominal_pt[0], nominal_pt[1]
 
-        # Calculate camera target gantry position so camera optical axis is positioned over nominal point
-        # Optical_Axis = Gantry_Pos + Camera_Offset  =>  Target_Gantry = Nominal_Bed_Pos - Camera_Offset
-        raw_target_x = nom_x - args.camera_offset_x
-        raw_target_y = nom_y - args.camera_offset_y
+        # Target camera gantry position: jog directly to recorded camera search coordinates
+        target_cam_x = max(0.0, min(bed_max_x, nom_x))
+        target_cam_y = max(0.0, min(bed_max_y, nom_y))
 
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-        cfg = {}
-        if os.path.isfile(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-            except Exception:
-                pass
-
-        bed_max_x = cfg.get("bed_width_mm", 220.0)
-        bed_max_y = cfg.get("bed_height_mm", 220.0)
-        target_cam_x = max(0.0, min(bed_max_x, raw_target_x))
-        target_cam_y = max(0.0, min(bed_max_y, raw_target_y))
-
-        logger.info("Jogging camera over Fiducial #%d (Nominal: %.2f, %.2f) -> Target Gantry (%.2f, %.2f)...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y)
+        logger.info("Jogging camera over Fiducial #%d (Search Point: %.2f, %.2f) -> Target Gantry (%.2f, %.2f)...", idx + 1, nom_x, nom_y, target_cam_x, target_cam_y)
 
         if not args.mock:
             moonraker.jog_to(x=target_cam_x, y=target_cam_y, z=args.z_safe, feedrate=args.f_travel)
@@ -194,11 +195,9 @@ def main():
                 camera_offset_y=args.camera_offset_y,
             )
         else:
-            # Mock mode: add minor simulated rotation (0.5 deg) and translation (1.0 mm)
-            theta = math.radians(0.5)
-            cos_t, sin_t = math.cos(theta), math.sin(theta)
-            bed_x = nom_x * cos_t - nom_y * sin_t + 1.2
-            bed_y = nom_x * sin_t + nom_y * cos_t + 0.8
+            # Mock mode: add camera offset and minor simulated translation
+            bed_x = nom_x + args.camera_offset_x + 0.2
+            bed_y = nom_y + args.camera_offset_y + 0.1
             logger.info("[MOCK] Simulated measured bed coordinate for Fiducial #%d: (%.3f, %.3f)", idx + 1, bed_x, bed_y)
 
         measured_bed_points.append([bed_x, bed_y])
@@ -208,7 +207,23 @@ def main():
 
     # Step 4: Compute 2D Rigid Affine Matrix M
     logger.info("Computing 2D Rigid Affine Transformation matrix...")
-    M = TransformEstimator.compute_affine_matrix(nominal_fiducials, measured_bed_points)
+
+    # Determine reference nominal points in design space
+    design_nominal_points = None
+    if not args.svg.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
+        design_nominal_points = extract_svg_fiducials(args.svg, bed_height_mm=bed_max_y)
+        if design_nominal_points is not None:
+            logger.info("Extracted %d nominal fiducials from SVG design: %s", len(design_nominal_points), design_nominal_points.tolist())
+
+    if design_nominal_points is None:
+        cfg_design = cfg.get("design_fiducials")
+        if cfg_design and len(cfg_design) >= 3:
+            design_nominal_points = np.array(cfg_design, dtype=np.float64)
+            logger.info("Using design_fiducials from config: %s", design_nominal_points.tolist())
+        else:
+            design_nominal_points = nominal_fiducials
+
+    M = TransformEstimator.compute_affine_matrix(design_nominal_points, measured_bed_points)
 
     # Step 5: Check if input is SVG or PolyCut/JScut G-code File
     if args.svg.lower().endswith((".gcode", ".nc", ".gc", ".tap")):

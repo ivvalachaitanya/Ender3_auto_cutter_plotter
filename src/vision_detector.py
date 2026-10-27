@@ -8,6 +8,7 @@ Handles:
 """
 
 import logging
+import os
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
@@ -254,3 +255,61 @@ class TransformEstimator:
 
         transformed = pts_homogeneous @ M.T  # Nx2
         return transformed
+
+
+def extract_svg_fiducials(svg_path: str, bed_height_mm: float = 220.0) -> Optional[np.ndarray]:
+    """
+    Extract nominal fiducial positions from SVG file (in bed coordinate space with flipped Y).
+    Looks for 10x10mm marker image elements or elements with 'aruco'/'fiducial' in id.
+
+    Returns Nx2 array of points sorted: Back-Left, Back-Right, Front-Left.
+    """
+    if not os.path.isfile(svg_path):
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(svg_path)
+        root = tree.getroot()
+
+        height = bed_height_mm
+        vb = root.attrib.get('viewBox')
+        if vb:
+            parts = vb.replace(',', ' ').split()
+            if len(parts) == 4:
+                try:
+                    height = float(parts[3])
+                except ValueError:
+                    pass
+
+        markers = []
+        for elem in root.iter():
+            tag = elem.tag.split('}')[-1].lower()
+            elem_id = str(elem.attrib.get('id', '')).lower()
+            if tag == 'image':
+                try:
+                    w = float(elem.attrib.get('width', 0))
+                    h = float(elem.attrib.get('height', 0))
+                    x = float(elem.attrib.get('x', 0))
+                    y = float(elem.attrib.get('y', 0))
+                except (ValueError, TypeError):
+                    continue
+
+                if (abs(w - 10.0) < 1.0 and abs(h - 10.0) < 1.0) or 'aruco' in elem_id or 'fiducial' in elem_id:
+                    cx = x + w / 2.0
+                    cy = y + h / 2.0
+                    bed_y = height - cy
+                    markers.append((cx, bed_y))
+
+        if len(markers) >= 3:
+            pts = np.array(markers[:3], dtype=np.float64)
+            median_y = np.median(pts[:, 1])
+            back_pts = sorted([p for p in pts if p[1] >= median_y], key=lambda p: p[0])
+            front_pts = sorted([p for p in pts if p[1] < median_y], key=lambda p: p[0])
+            sorted_markers = back_pts + front_pts
+            if len(sorted_markers) >= 3:
+                return np.array(sorted_markers[:3], dtype=np.float64)
+            return pts
+    except Exception as e:
+        logger.warning("Could not extract SVG fiducials from %s: %s", svg_path, e)
+    return None
+

@@ -78,14 +78,39 @@ class MoonrakerClient:
             logger.error("Failed to query toolhead position: %s", e)
             raise RuntimeError(f"Could not retrieve toolhead position from Moonraker: {e}")
 
-    def home_gantry(self, wait_seconds: float = 1.0, timeout: float = 60.0) -> bool:
+    def is_homed(self, axes: str = "xyz") -> bool:
+        """
+        Check if requested axes are already homed in Klipper.
+
+        :param axes: String of axes to check, e.g. 'xyz' or 'xy'
+        :return: True if all requested axes are homed
+        """
+        url = f"{self.base_url}/printer/objects/query?toolhead"
+        try:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            homed = data.get("result", {}).get("status", {}).get("toolhead", {}).get("homed_axes", "")
+            is_all_homed = all(axis.lower() in homed.lower() for axis in axes)
+            logger.info("Checked homed status: required='%s', homed_axes='%s', is_homed=%s", axes, homed, is_all_homed)
+            return is_all_homed
+        except Exception as e:
+            logger.warning("Could not determine printer homed status: %s", e)
+            return False
+
+    def home_gantry(self, wait_seconds: float = 1.0, timeout: float = 60.0, force: bool = False) -> bool:
         """
         Execute homing sequence (G28).
 
         :param wait_seconds: Time to wait after homing completes
         :param timeout: Maximum timeout for homing in seconds (default: 60.0)
+        :param force: If False, skip homing if all axes (XYZ) are already homed
         :return: True if successful
         """
+        if not force and self.is_homed("xyz"):
+            logger.info("Printer axes are already homed (XYZ). Skipping redundant G28 homing sequence.")
+            return True
+
         logger.info("Executing printer homing sequence (G28)...")
         if not self.send_gcode("G28", timeout=timeout):
             return False

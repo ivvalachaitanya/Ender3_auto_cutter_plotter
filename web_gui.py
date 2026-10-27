@@ -612,6 +612,10 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- Auto Mode Controls -->
         <div id="auto-align-controls" class="space-y-2">
           <button onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Auto-Scan ArUco Fiducials</button>
+          <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
+            <input type="checkbox" id="force-home-check" class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
+            <span>Force G28 homing (uncheck to skip if already homed)</span>
+          </label>
         </div>
 
         <!-- Manual Mode Controls (Hidden by Default) -->
@@ -1199,10 +1203,11 @@ HTML_PAGE = """<!DOCTYPE html>
     function runScan() {
       const file = document.getElementById('svg-file').value;
       const cam = document.getElementById('camera-select').value;
-      addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}'...`);
+      const forceHome = document.getElementById('force-home-check') ? document.getElementById('force-home-check').checked : false;
+      addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}' (Force Home: ${forceHome})...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/scan?file=${file}&camera=${cam}`, { method: 'POST', signal: controller.signal })
+      fetch(`/api/scan?file=${file}&camera=${cam}&force_home=${forceHome ? '1' : '0'}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1868,8 +1873,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             filename = query.get("file", ["Cut1.svg"])[0]
             cam_source = query.get("camera", ["crowsnest"])[0]
             dry_flag = query.get("dry", [""])[0]
+            force_home = query.get("force_home", ["0"])[0]
 
             cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
+
+            if force_home == "1" or force_home == "true":
+                cmd.append("--force-home")
 
             cfg = load_config()
             moonraker_url = cfg.get("moonraker_url", "http://localhost:7125")
