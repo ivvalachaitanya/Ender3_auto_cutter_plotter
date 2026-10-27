@@ -334,8 +334,17 @@ class CameraStreamer:
     def enumerate_cameras(self):
         """Enumerate local USB webcams and network camera streams."""
         cameras = []
+        cfg = load_config()
+        crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
+        cameras.append({
+            "id": "crowsnest",
+            "name": f"Klipper Crowsnest Stream ({crowsnest_url})",
+            "type": "mjpeg",
+            "url": crowsnest_url
+        })
+
         if cv2 is not None:
-            for idx in range(4):
+            for idx in range(2):
                 try:
                     cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(idx)
                     if cap.isOpened():
@@ -352,14 +361,6 @@ class CameraStreamer:
                 except Exception:
                     pass
 
-        cfg = load_config()
-        crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
-        cameras.append({
-            "id": "crowsnest",
-            "name": f"Klipper Crowsnest Stream ({crowsnest_url})",
-            "type": "mjpeg",
-            "url": crowsnest_url
-        })
         cameras.append({
             "id": "mock",
             "name": "Mock Virtual Camera (Test Feed)",
@@ -602,9 +603,9 @@ HTML_PAGE = """<!DOCTYPE html>
             <button onclick="refreshCameras()" class="text-[10px] text-purple-400 hover:underline">🔄 Refresh</button>
           </div>
           <select id="camera-select" onchange="switchCameraStream()" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-purple-300 font-mono">
+            <option value="crowsnest" selected>Klipper Crowsnest Stream</option>
             <option value="0">USB Camera 0 (Primary)</option>
             <option value="1">USB Camera 1 (Secondary)</option>
-            <option value="crowsnest">Klipper Crowsnest (8080)</option>
             <option value="mock">Mock Virtual Feed</option>
           </select>
         </div>
@@ -704,7 +705,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <span id="cam-status" class="text-[10px] text-emerald-400 font-mono">● LIVE (30 FPS)</span>
         </div>
         <div id="camera-container" class="w-full h-[450px] bg-black rounded border border-slate-800 flex items-center justify-center overflow-hidden relative">
-          <img id="camera-feed" src="/api/camera/stream?source=0" class="w-full h-full object-contain">
+          <img id="camera-feed" src="/api/camera/stream?source=crowsnest" class="w-full h-full object-contain">
         </div>
       </div>
 
@@ -1424,8 +1425,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             cap = None
 
             if source_str.isdigit() and cv2 is not None:
-                cam_idx = int(source_str)
-                cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(cam_idx)
+                try:
+                    cam_idx = int(source_str)
+                    cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(cam_idx)
+                except Exception as e:
+                    logger.warning("Could not open USB camera %s: %s", source_str, e)
+                    cap = None
 
             try:
                 while True:
