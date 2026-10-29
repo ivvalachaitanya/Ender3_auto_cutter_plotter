@@ -28,6 +28,6 @@ echo Close this window or press Ctrl+C to stop the server.
 echo ======================================================
 echo.
 
-start "" http://localhost:5000
+start "" "http://localhost:5000"
 "%PY_EXE%" web_gui.py --port 5000
 pause

@@ -931,7 +931,7 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <!-- Settings Calibration Modal -->
-  <div id="settings-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+  <div id="settings-modal" style="display: none;" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="card max-w-2xl w-full p-6 space-y-6 border-slate-700 shadow-2xl max-h-[90vh] overflow-y-auto">
       <div class="flex justify-between items-center border-b border-slate-700 pb-3">
         <div class="flex items-center space-x-2">
@@ -1034,7 +1034,7 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <!-- Bed Mesh Test Generator Modal -->
-  <div id="bed-test-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+  <div id="bed-test-modal" style="display: none;" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="card w-full max-w-md p-6 space-y-4 shadow-2xl border border-slate-700">
       <div class="flex justify-between items-center border-b border-slate-800 pb-3">
         <h3 class="text-base font-bold text-amber-400 flex items-center space-x-2">
@@ -1267,7 +1267,9 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-f-travel').value = cfg.f_travel_mm_min;
             document.getElementById('cfg-moonraker-url').value = cfg.moonraker_url;
             document.getElementById('cfg-crowsnest-url').value = cfg.crowsnest_url;
-            document.getElementById('settings-modal').classList.remove('hidden');
+            const sm = document.getElementById('settings-modal');
+            sm.style.display = 'flex';
+            sm.classList.remove('hidden');
           }
         })
         .catch(err => addLog(`[ERROR] Settings load failed: ${err.message}`))
@@ -1275,15 +1277,21 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function closeSettingsModal() {
-      document.getElementById('settings-modal').classList.add('hidden');
+      const sm = document.getElementById('settings-modal');
+      sm.style.display = 'none';
+      sm.classList.add('hidden');
     }
 
     function openBedTestModal() {
-      document.getElementById('bed-test-modal').classList.remove('hidden');
+      const bm = document.getElementById('bed-test-modal');
+      bm.style.display = 'flex';
+      bm.classList.remove('hidden');
     }
 
     function closeBedTestModal() {
-      document.getElementById('bed-test-modal').classList.add('hidden');
+      const bm = document.getElementById('bed-test-modal');
+      bm.style.display = 'none';
+      bm.classList.add('hidden');
     }
 
     function generateBedTestPattern() {
