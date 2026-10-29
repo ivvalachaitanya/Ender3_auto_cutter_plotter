@@ -2,8 +2,8 @@
   "bed_width_mm": 235,
   "bed_height_mm": 235,
   "blade_offset_mm": 0.35,
-  "camera_offset_x_mm": 25,
-  "camera_offset_y_mm": 0,
+  "camera_offset_x_mm": 19.0,
+  "camera_offset_y_mm": -1.0,
   "mm_per_pixel": 0.0293,
   "z_safe_mm": 5,
   "z_scan_mm": 20,
@@ -16,16 +16,16 @@
   "search_mode": "auto",
   "nominal_fiducials": [
     [
-      5.03,
-      224.154
+      5.098,
+      232.114
     ],
     [
-      174.415,
-      225.78
+      174.702,
+      232.092
     ],
     [
-      6.693,
-      34.299
+      5.103,
+      42.293
     ]
   ],
   "design_fiducials": [
