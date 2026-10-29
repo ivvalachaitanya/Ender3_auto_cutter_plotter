@@ -1091,7 +1091,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function addLog(msg) {
       const box = document.getElementById('log-box');
       if (!box || !msg) return;
-      const lines = String(msg).split('\n');
+      const lines = String(msg).split(String.fromCharCode(10)).map(l => l.replace(String.fromCharCode(13), ''));
       const timeStr = new Date().toLocaleTimeString();
       lines.forEach(l => {
         const trimmed = l.trim();
