@@ -332,7 +332,7 @@ class CameraStreamer:
                 print("[WARN] Could not initialize FiducialDetector for camera streamer:", e)
 
     def enumerate_cameras(self):
-        """Enumerate local USB webcams and network camera streams."""
+        """Enumerate local USB webcams and network camera streams without blocking."""
         cameras = []
         cfg = load_config()
         crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
@@ -342,25 +342,12 @@ class CameraStreamer:
             "type": "mjpeg",
             "url": crowsnest_url
         })
-
-        if cv2 is not None:
-            for idx in range(2):
-                try:
-                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(idx)
-                    if cap.isOpened():
-                        ret, frame = cap.read()
-                        if ret and frame is not None:
-                            h, w = frame.shape[:2]
-                            cameras.append({
-                                "id": str(idx),
-                                "name": f"USB Camera {idx} ({w}x{h})",
-                                "type": "opencv",
-                                "index": idx
-                            })
-                        cap.release()
-                except Exception:
-                    pass
-
+        cameras.append({
+            "id": "0",
+            "name": "USB Camera 0 (Local)",
+            "type": "opencv",
+            "index": 0
+        })
         cameras.append({
             "id": "mock",
             "name": "Mock Virtual Camera (Test Feed)",
@@ -369,24 +356,48 @@ class CameraStreamer:
         return cameras
 
     def fetch_crowsnest_frame(self):
-        """Fetch live frame from Klipper Crowsnest snapshot endpoint."""
+        """Fetch live frame from Klipper Crowsnest stream or snapshot endpoint using fast MJPEG delimiter extraction."""
         cfg = load_config()
         crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
-        urls_to_try = []
+        urls_to_try = [crowsnest_url]
         if "action=stream" in crowsnest_url:
             urls_to_try.append(crowsnest_url.replace("action=stream", "action=snapshot"))
-        urls_to_try.append(crowsnest_url)
+        elif "action=snapshot" in crowsnest_url:
+            urls_to_try.append(crowsnest_url.replace("action=snapshot", "action=stream"))
 
         for url in urls_to_try:
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "CutterStudio/1.0"})
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    data = resp.read()
-                    if data and len(data) > 0 and cv2 is not None and np is not None:
-                        img_array = np.frombuffer(data, dtype=np.uint8)
-                        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                        if frame is not None and frame.size > 0:
-                            return frame
+                if "action=stream" in url:
+                    req = urllib.request.Request(url, headers={"User-Agent": "CutterStudio/1.0"})
+                    with urllib.request.urlopen(req, timeout=1.5) as stream_resp:
+                        buf = b""
+                        for _ in range(35):
+                            chunk = stream_resp.read(2048)
+                            if not chunk:
+                                break
+                            buf += chunk
+
+                        starts = [i for i in range(len(buf) - 1) if buf[i:i+2] == b"\xff\xd8"]
+                        ends = [i for i in range(len(buf) - 1) if buf[i:i+2] == b"\xff\xd9"]
+
+                        for s in reversed(starts):
+                            valid_ends = [e for e in ends if e > s]
+                            if valid_ends:
+                                e = valid_ends[0]
+                                jpg = buf[s : e + 2]
+                                if cv2 is not None and np is not None:
+                                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                    if frame is not None and frame.size > 0:
+                                        return frame
+                else:
+                    req = urllib.request.Request(url, headers={"User-Agent": "CutterStudio/1.0"})
+                    with urllib.request.urlopen(req, timeout=1.0) as resp:
+                        data = resp.read()
+                        if data and len(data) > 0 and cv2 is not None and np is not None:
+                            img_array = np.frombuffer(data, dtype=np.uint8)
+                            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            if frame is not None and frame.size > 0:
+                                return frame
             except Exception:
                 pass
         return None
@@ -530,7 +541,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
       </div>
       <div class="flex items-center space-x-3">
-        <span class="px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">● Klipper Online (7125)</span>
+        <span id="klipper-status-badge" onclick="checkConnection()" title="Click to check server connection" class="cursor-pointer px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">● Cutter Studio Online (Port 5000)</span>
         <button onclick="openBedTestModal()" class="px-3 py-1.5 rounded-lg text-xs bg-amber-900/60 hover:bg-amber-800 text-amber-300 border border-amber-600/50 font-semibold flex items-center space-x-1.5 shadow transition-all hover:border-amber-400">
           <span>🏁 Bed Mesh Test</span>
         </button>
@@ -1194,20 +1205,26 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function loadPreview() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        addLog('[WARN] No file selected to preview.');
+        return;
+      }
+      const file = select.value;
       const btn = document.getElementById('load-preview-btn');
       if (btn) {
         btn.disabled = true;
         btn.innerHTML = "⏳ Loading Preview...";
       }
-      const file = document.getElementById('svg-file').value;
       addLog(`Loading SVG preview for '${file}'...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-      fetch(`/api/preview?file=${file}`, { signal: controller.signal })
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      fetch(`/api/preview?file=${encodeURIComponent(file)}`, { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'ok') {
-            document.getElementById('svg-container').innerHTML = data.svg_content;
+            const container = document.getElementById('svg-container');
+            if (container) container.innerHTML = data.svg_content;
             addLog(`Rendered SVG (${data.contours_count} contours found).`);
           } else {
             addLog(`Error: ${data.message}`);
@@ -1224,26 +1241,42 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function openPrintWindow() {
-      const file = document.getElementById('svg-file').value;
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file to print first.");
+        return;
+      }
+      const file = select.value;
       addLog(`[PRINT] Sending full color artwork + ArUco fiducials of '${file}' to 2D Paper/Vinyl Printer at 1:1 scale...`);
-      window.open(`/print-artwork?file=${file}`, '_blank');
+      window.open(`/print-artwork?file=${encodeURIComponent(file)}`, '_blank');
     }
 
     function runScan() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a cut file in Step 1 first.");
+        addLog("[ERROR] No file selected in Step 1.");
+        return;
+      }
+      const file = select.value;
+      const camSelect = document.getElementById('camera-select');
+      const cam = camSelect ? camSelect.value : 'crowsnest';
+      const searchModeSelect = document.getElementById('search-mode-select');
+      const searchMode = searchModeSelect ? searchModeSelect.value : 'auto';
+      const forceHomeCheck = document.getElementById('force-home-check');
+      const forceHome = forceHomeCheck ? forceHomeCheck.checked : false;
+
       const btn = document.getElementById('run-scan-btn');
       if (btn) {
         btn.disabled = true;
         btn.className = "w-full bg-purple-900 text-purple-200 font-semibold py-2 rounded text-xs shadow-md cursor-not-allowed animate-pulse";
         btn.innerHTML = "⏳ Scanning & Centering Fiducials... (Please Wait)";
       }
-      const file = document.getElementById('svg-file').value;
-      const cam = document.getElementById('camera-select').value;
-      const searchMode = document.getElementById('search-mode-select') ? document.getElementById('search-mode-select').value : 'auto';
-      const forceHome = document.getElementById('force-home-check') ? document.getElementById('force-home-check').checked : false;
+
       addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}' (Strategy: ${searchMode.toUpperCase()}, Force Home: ${forceHome})...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/scan?file=${file}&camera=${cam}&force_home=${forceHome ? '1' : '0'}&search_mode=${searchMode}`, { method: 'POST', signal: controller.signal })
+      fetch(`/api/scan?file=${encodeURIComponent(file)}&camera=${encodeURIComponent(cam)}&force_home=${forceHome ? '1' : '0'}&search_mode=${encodeURIComponent(searchMode)}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1265,42 +1298,48 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function onFileSelectionChanged() {
-      const file = document.getElementById('svg-file').value;
-      const isGcode = file.toLowerCase().match(/\.(gcode|nc|gc|tap)$/);
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) return;
+      const file = select.value;
+      const isGcode = Boolean(file.toLowerCase().match(/\.(gcode|nc|gc|tap)$/));
       const svgMode = document.getElementById('step2-svg-mode');
       const gcodeMode = document.getElementById('step2-gcode-mode');
       if (isGcode) {
-        svgMode.classList.add('hidden');
-        gcodeMode.classList.remove('hidden');
+        if (svgMode) svgMode.classList.add('hidden');
+        if (gcodeMode) gcodeMode.classList.remove('hidden');
       } else {
-        svgMode.classList.remove('hidden');
-        gcodeMode.classList.add('hidden');
+        if (svgMode) svgMode.classList.remove('hidden');
+        if (gcodeMode) gcodeMode.classList.add('hidden');
       }
       loadPreview();
     }
 
     function loadFileList() {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
       fetch('/api/files', { signal: controller.signal })
         .then(r => r.json())
         .then(data => {
-          if (data.status === 'ok' && data.files) {
+          if (data.status === 'ok' && data.files && data.files.length > 0) {
             const select = document.getElementById('svg-file');
+            if (!select) return;
             const currentVal = select.value;
             select.innerHTML = '';
             data.files.forEach(f => {
               const opt = document.createElement('option');
               opt.value = f;
               opt.textContent = f;
-              if (f === currentVal) opt.selected = true;
               select.appendChild(opt);
             });
-            if (data.files.includes(currentVal)) {
+            if (currentVal && data.files.includes(currentVal)) {
               select.value = currentVal;
+            } else {
+              select.value = data.files[0];
             }
             addLog(`Loaded ${data.files.length} vector/gcode files from workspace.`);
             onFileSelectionChanged();
+          } else {
+            addLog('[WARN] No vector or G-code files found in workspace.');
           }
         })
         .catch(err => addLog(`[ERROR] File list failed: ${err.message}`))
@@ -1316,7 +1355,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
       addLog(`Uploading '${file.name}' to workspace...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
       fetch('/api/upload', {
         method: 'POST',
         body: formData,
@@ -1326,26 +1365,7 @@ HTML_PAGE = """<!DOCTYPE html>
       .then(data => {
         if (data.status === 'ok') {
           addLog(`[UPLOAD] ${data.message}`);
-          const controller2 = new AbortController();
-          const timeoutId2 = setTimeout(() => controller2.abort(), 5000);
-          fetch('/api/files', { signal: controller2.signal })
-            .then(r => r.json())
-            .then(fileData => {
-              if (fileData.status === 'ok' && fileData.files) {
-                const select = document.getElementById('svg-file');
-                select.innerHTML = '';
-                fileData.files.forEach(f => {
-                  const opt = document.createElement('option');
-                  opt.value = f;
-                  opt.textContent = f;
-                  select.appendChild(opt);
-                });
-                select.value = data.filename;
-                onFileSelectionChanged();
-              }
-            })
-            .catch(err => addLog(`[ERROR] Refresh file list failed: ${err.message}`))
-            .finally(() => clearTimeout(timeoutId2));
+          loadFileList();
         } else {
           addLog(`[ERROR] Upload failed: ${data.message}`);
         }
@@ -1355,16 +1375,21 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function runBoundingBoxFrame() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
       const btn = document.getElementById('run-frame-btn');
       if (btn) {
         btn.disabled = true;
         btn.innerHTML = "<span>⏳ Tracing Frame...</span>";
       }
-      const file = document.getElementById('svg-file').value;
       addLog(`[FRAME] Tracing outer 4-corner bounding box for '${file}' at Safe Z...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-      fetch(`/api/frame?file=${file}`, { method: 'POST', signal: controller.signal })
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      fetch(`/api/frame?file=${encodeURIComponent(file)}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1383,25 +1408,39 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function downloadGcode() {
-      const file = document.getElementById('svg-file').value;
-      const dry = document.getElementById('dry-run').checked ? '1' : '0';
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
+      const dryCheck = document.getElementById('dry-run');
+      const dry = (dryCheck && dryCheck.checked) ? '1' : '0';
       addLog(`[GCODE] Generating & downloading Klipper G-code for '${file}'...`);
       window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}`;
     }
 
     function runCut() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a cut file in Step 1 first.");
+        addLog("[ERROR] No file selected in Step 1.");
+        return;
+      }
+      const file = select.value;
+      const dryCheck = document.getElementById('dry-run');
+      const dry = (dryCheck && dryCheck.checked) ? '--dry-run' : '';
+
       const btn = document.getElementById('run-cut-btn');
       if (btn) {
         btn.disabled = true;
         btn.className = "w-full bg-emerald-900 text-emerald-200 font-bold py-2 rounded text-xs shadow-lg cursor-not-allowed animate-pulse";
         btn.innerHTML = "⏳ Preparing & Sending Job to Cutter...";
       }
-      const file = document.getElementById('svg-file').value;
-      const dry = document.getElementById('dry-run').checked ? '--dry-run' : '';
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/cut?file=${file}&dry=${dry}`, { method: 'POST', signal: controller.signal })
+      fetch(`/api/cut?file=${encodeURIComponent(file)}&dry=${encodeURIComponent(dry)}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1422,10 +1461,31 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    // Connection health monitor
+    function checkConnection() {
+      fetch('/api/settings', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(data => {
+          const badge = document.getElementById('klipper-status-badge');
+          if (badge) {
+            badge.className = "cursor-pointer px-3 py-1 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+            badge.innerHTML = "● Cutter Studio Online (Port 5000)";
+          }
+        })
+        .catch(() => {
+          const badge = document.getElementById('klipper-status-badge');
+          if (badge) {
+            badge.className = "cursor-pointer px-3 py-1 rounded-full text-xs bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse";
+            badge.innerHTML = "⚠️ Cutter Studio Disconnected - Refreshing...";
+          }
+        });
+    }
+
     // Auto-refresh cameras & load file list on page load
     window.addEventListener('DOMContentLoaded', () => {
       refreshCameras();
       loadFileList();
+      setInterval(checkConnection, 5000);
     });
   </script>
 </body>
@@ -2025,15 +2085,15 @@ def main():
 
     server_address = ("", args.port)
     httpd = ThreadingHTTPServer(server_address, WebRequestHandler)
-    print("======================================================")
-    print("Ender 3 Cutter Studio Web Server Started!")
-    print(f"Open in your browser: http://localhost:{args.port}")
-    print("======================================================")
+    print("======================================================", flush=True)
+    print("Ender 3 Cutter Studio Web Server Started!", flush=True)
+    print(f"Open in your browser: http://localhost:{args.port}", flush=True)
+    print("======================================================", flush=True)
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down Web Server.")
+        print("\nShutting down Web Server.", flush=True)
         httpd.server_close()
 
 
