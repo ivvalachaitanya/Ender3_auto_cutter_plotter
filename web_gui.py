@@ -885,6 +885,13 @@ HTML_PAGE = """<!DOCTYPE html>
           <span class="text-slate-400">Dry Run (Air Cut):</span>
           <input type="checkbox" id="dry-run" class="accent-emerald-500">
         </div>
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400 font-medium">Cut Z Depth:</span>
+          <div class="flex items-center space-x-1">
+            <input type="number" id="quick-z-cut" step="0.05" onchange="syncQuickZCut(this.value)" class="w-16 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-right font-mono text-xs" value="0.0">
+            <span class="text-slate-500 text-[10px]">mm</span>
+          </div>
+        </div>
         <div class="grid grid-cols-2 gap-2 text-xs">
           <button id="run-frame-btn" onclick="runBoundingBoxFrame()" class="bg-slate-800 hover:bg-slate-700 text-purple-300 py-1.5 rounded border border-purple-500/40 text-[11px] font-semibold shadow transition-all hover:border-purple-400 flex items-center justify-center space-x-1">
             <span>🔲 Frame Bounds</span>
@@ -1331,6 +1338,20 @@ HTML_PAGE = """<!DOCTYPE html>
       .finally(() => clearTimeout(timeoutId));
     }
 
+    function syncQuickZCut(val) {
+      const v = parseFloat(val);
+      if (isNaN(v)) return;
+      const setInp = document.getElementById('cfg-z-cut');
+      if (setInp) setInp.value = v;
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ z_cut_mm: v })
+      }).then(r => r.json()).then(d => {
+        addLog(`[SETTINGS] Cut Z depth updated to ${v.toFixed(2)} mm`);
+      }).catch(() => {});
+    }
+
     function saveSettings() {
       const newCfg = {
         bed_width_mm: parseFloat(document.getElementById('cfg-bed-width').value),
@@ -1359,6 +1380,9 @@ HTML_PAGE = """<!DOCTYPE html>
       .then(r => r.json())
       .then(data => {
         if (data.status === 'ok') {
+          if (document.getElementById('quick-z-cut') && document.getElementById('cfg-z-cut')) {
+            document.getElementById('quick-z-cut').value = document.getElementById('cfg-z-cut').value;
+          }
           addLog('[SETTINGS] Calibration parameters updated and saved to config.json!');
           closeSettingsModal();
           loadPreview();
@@ -1613,8 +1637,10 @@ HTML_PAGE = """<!DOCTYPE html>
       const file = select.value;
       const dryCheck = document.getElementById('dry-run');
       const dry = (dryCheck && dryCheck.checked) ? '1' : '0';
+      const quickZInp = document.getElementById('quick-z-cut');
+      const zCutVal = quickZInp ? quickZInp.value : '';
       addLog(`[GCODE] Generating & downloading Klipper G-code for '${file}'...`);
-      window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}`;
+      window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}&z_cut=${encodeURIComponent(zCutVal)}`;
     }
 
     function runCut() {
@@ -1627,6 +1653,8 @@ HTML_PAGE = """<!DOCTYPE html>
       const file = select.value;
       const dryCheck = document.getElementById('dry-run');
       const dry = (dryCheck && dryCheck.checked) ? '--dry-run' : '';
+      const quickZInp = document.getElementById('quick-z-cut');
+      const zCutVal = quickZInp ? quickZInp.value : '';
 
       const btn = document.getElementById('run-cut-btn');
       if (btn) {
@@ -1637,7 +1665,7 @@ HTML_PAGE = """<!DOCTYPE html>
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/cut?file=${encodeURIComponent(file)}&dry=${encodeURIComponent(dry)}`, { method: 'POST', signal: controller.signal })
+      fetch(`/api/cut?file=${encodeURIComponent(file)}&dry=${encodeURIComponent(dry)}&z_cut=${encodeURIComponent(zCutVal)}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1682,6 +1710,12 @@ HTML_PAGE = """<!DOCTYPE html>
     function initStudio() {
       refreshCameras();
       loadFileList();
+      fetch('/api/settings').then(r => r.json()).then(d => {
+        if (d.settings && d.settings.z_cut_mm !== undefined) {
+          const qz = document.getElementById('quick-z-cut');
+          if (qz) qz.value = d.settings.z_cut_mm;
+        }
+      }).catch(() => {});
       setInterval(checkConnection, 5000);
       setTimeout(onFileSelectionChanged, 100);
     }
@@ -1960,6 +1994,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
                 if z_lift_swivel > 0.0:
                     cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])
+
+                z_cut_param = query.get("z_cut", [""])[0]
+                if z_cut_param != "":
+                    try:
+                        cmd.extend(["--z-cut", str(float(z_cut_param))])
+                    except ValueError:
+                        pass
 
                 if dry_flag == "1" or dry_flag == "true":
                     cmd.append("--dry-run")
@@ -2253,6 +2294,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
             if z_lift_swivel > 0.0:
                 cmd.extend(["--z-lift-swivel", str(z_lift_swivel)])
+
+            z_cut_param = query.get("z_cut", [""])[0]
+            if z_cut_param != "":
+                try:
+                    cmd.extend(["--z-cut", str(float(z_cut_param))])
+                    cfg["z_cut_mm"] = float(z_cut_param)
+                    save_config(cfg)
+                except ValueError:
+                    pass
 
             if dry_flag:
                 cmd.append(dry_flag)
