@@ -19,6 +19,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -39,6 +40,29 @@ PORT = 5000
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(WORKSPACE_DIR, "config.json")
 sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
+
+
+def find_python_executable() -> str:
+    """Find the verified Python executable containing cv2, numpy, and svgelements."""
+    candidates = [
+        r"C:\Users\chait\AppData\Local\Programs\Python\Python39\python.exe",
+        sys.executable,
+        shutil.which("python"),
+        shutil.which("python3"),
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            try:
+                test = subprocess.run([p, "-c", "import cv2, svgelements, numpy; print('OK')"], capture_output=True, text=True, timeout=3)
+                if "OK" in test.stdout:
+                    return p
+            except Exception:
+                pass
+    return sys.executable
+
+
+PYTHON_EXE = find_python_executable()
+print(f"[INIT] Verified Python executable for subprocesses: {PYTHON_EXE}")
 
 DEFAULT_CONFIG = {
     "bed_width_mm": 220.0,
@@ -66,6 +90,24 @@ def resolve_workspace_file(filename):
     if os.path.isfile(p2):
         return p2
     return p1
+
+
+def get_available_workspace_files() -> list:
+    """Scan workspace and samples/ for SVG and G-code cut files."""
+    valid_exts = (".svg", ".gcode", ".nc", ".gc", ".tap")
+    file_set = set()
+    for d in [WORKSPACE_DIR, os.path.join(WORKSPACE_DIR, "samples")]:
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.lower().endswith(valid_exts):
+                    file_set.add(f)
+    return sorted(
+        list(file_set),
+        key=lambda x: (
+            0 if "cut_size" in x.lower() else (1 if "cut.svg" in x.lower() else (2 if x.lower().endswith(".svg") else 3)),
+            x.lower(),
+        ),
+    )
 
 
 def get_file_bounding_box(filepath):
@@ -324,6 +366,8 @@ class CameraStreamer:
 
     def __init__(self):
         self.detector = None
+        self._frame_count = 0
+        self._last_dets = {}
         if cv2 is not None:
             try:
                 from vision_detector import FiducialDetector
@@ -356,14 +400,18 @@ class CameraStreamer:
         return cameras
 
     def fetch_crowsnest_frame(self):
-        """Fetch live frame from Klipper Crowsnest stream or snapshot endpoint using fast MJPEG delimiter extraction."""
+        """Fetch live frame from Klipper Crowsnest snapshot endpoint or fast MJPEG delimiter extraction."""
         cfg = load_config()
         crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
-        urls_to_try = [crowsnest_url]
+        urls_to_try = []
         if "action=stream" in crowsnest_url:
             urls_to_try.append(crowsnest_url.replace("action=stream", "action=snapshot"))
+            urls_to_try.append(crowsnest_url)
         elif "action=snapshot" in crowsnest_url:
+            urls_to_try.append(crowsnest_url)
             urls_to_try.append(crowsnest_url.replace("action=snapshot", "action=stream"))
+        else:
+            urls_to_try.append(crowsnest_url)
 
         for url in urls_to_try:
             try:
@@ -464,9 +512,13 @@ class CameraStreamer:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
         focus_score = cv2.Laplacian(gray, cv2.CV_64F).var()
 
+        self._frame_count += 1
         if self.detector is not None:
             try:
-                dets = self.detector.detect_aruco_markers(frame)
+                # Detect ArUco markers every 4th frame without warning spam to keep stream buttery smooth
+                if self._frame_count % 4 == 0 or not self._last_dets:
+                    self._last_dets = self.detector.detect_aruco_markers(frame, log_warnings=False)
+                dets = self._last_dets
                 for marker_id, (u, v) in dets.items():
                     u_int, v_int = int(u), int(v)
                     cv2.circle(frame, (u_int, v_int), 5, (0, 0, 255), -1)
@@ -513,10 +565,12 @@ HTML_PAGE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ender 3 Auto-Cutter Studio</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Load Tailwind asynchronously so it NEVER blocks page rendering if offline -->
+  <script src="https://cdn.tailwindcss.com" defer></script>
   <style>
-    body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif; }
-    .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 1rem; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: #0b0f19; color: #f1f5f9; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .card { background-color: #111827; border: 1px solid #1f2937; border-radius: 0.75rem; padding: 1rem; }
     .btn-primary { background-color: #10b981; color: white; border-radius: 0.5rem; font-weight: 600; }
     .btn-primary:hover { background-color: #059669; }
     #svg-container svg {
@@ -527,6 +581,141 @@ HTML_PAGE = """<!DOCTYPE html>
       display: block;
       margin: auto;
     }
+    /* Complete Standalone Offline CSS Fallbacks (Zero Internet Required) */
+    .flex { display: flex; }
+    .inline-flex { display: inline-flex; }
+    .flex-col { flex-direction: column; }
+    .items-center { align-items: center; }
+    .items-start { align-items: flex-start; }
+    .justify-between { justify-content: space-between; }
+    .justify-center { justify-content: center; }
+    .justify-end { justify-content: flex-end; }
+    .space-x-1 > * + * { margin-left: 0.25rem; }
+    .space-x-2 > * + * { margin-left: 0.5rem; }
+    .space-x-3 > * + * { margin-left: 0.75rem; }
+    .space-x-4 > * + * { margin-left: 1rem; }
+    .space-y-1 > * + * { margin-top: 0.25rem; }
+    .space-y-2 > * + * { margin-top: 0.5rem; }
+    .space-y-3 > * + * { margin-top: 0.75rem; }
+    .space-y-4 > * + * { margin-top: 1rem; }
+    .space-y-6 > * + * { margin-top: 1.5rem; }
+    .grid { display: grid; }
+    .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .gap-1 { gap: 0.25rem; }
+    .gap-2 { gap: 0.5rem; }
+    .gap-3 { gap: 0.75rem; }
+    .gap-4 { gap: 1rem; }
+    .gap-6 { gap: 1.5rem; }
+    .w-full { width: 100%; }
+    .max-w-7xl { max-width: 80rem; margin-left: auto; margin-right: auto; }
+    .max-w-2xl { max-width: 42rem; }
+    .h-full { height: 100%; }
+    .h-\[450px\] { height: 450px; }
+    .max-h-\[90vh\] { max-height: 90vh; }
+    .rounded { border-radius: 0.375rem; }
+    .rounded-md { border-radius: 0.375rem; }
+    .rounded-lg { border-radius: 0.5rem; }
+    .rounded-xl { border-radius: 0.75rem; }
+    .rounded-full { border-radius: 9999px; }
+    .p-1 { padding: 0.25rem; }
+    .p-1\.5 { padding: 0.375rem; }
+    .p-2 { padding: 0.5rem; }
+    .p-3 { padding: 0.75rem; }
+    .p-4 { padding: 1rem; }
+    .p-6 { padding: 1.5rem; }
+    .px-1\.5 { padding-left: 0.375rem; padding-right: 0.375rem; }
+    .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+    .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .px-4 { padding-left: 1rem; padding-right: 1rem; }
+    .py-0\.5 { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+    .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+    .py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+    .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+    .pb-3 { padding-bottom: 0.75rem; }
+    .pb-4 { padding-bottom: 1rem; }
+    .pt-2 { padding-top: 0.5rem; }
+    .mb-1 { margin-bottom: 0.25rem; }
+    .mb-2 { margin-bottom: 0.5rem; }
+    .mb-3 { margin-bottom: 0.75rem; }
+    .mr-1 { margin-right: 0.25rem; }
+    .mr-2 { margin-right: 0.5rem; }
+    .bg-black { background-color: #000000; }
+    .bg-slate-700 { background-color: #334155; }
+    .bg-slate-800 { background-color: #1e293b; }
+    .bg-slate-900 { background-color: #0f172a; }
+    .bg-slate-950 { background-color: #020617; }
+    .bg-emerald-500 { background-color: #10b981; }
+    .bg-emerald-600 { background-color: #059669; }
+    .bg-emerald-700 { background-color: #047857; }
+    .bg-emerald-900 { background-color: #064e3b; }
+    .bg-purple-600 { background-color: #9333ea; }
+    .bg-purple-700 { background-color: #7e22ce; }
+    .bg-purple-900 { background-color: #581c87; }
+    .bg-rose-500 { background-color: #f43f5e; }
+    .bg-rose-600 { background-color: #e11d48; }
+    .bg-blue-600 { background-color: #2563eb; }
+    .bg-blue-950\/60 { background-color: rgba(23, 37, 84, 0.6); }
+    .bg-amber-600 { background-color: #d97706; }
+    .bg-amber-900\/60 { background-color: rgba(120, 53, 15, 0.6); }
+    .bg-emerald-500\/20 { background-color: rgba(16, 185, 129, 0.2); }
+    .bg-rose-500\/20 { background-color: rgba(244, 63, 94, 0.2); }
+    .bg-purple-500\/20 { background-color: rgba(168, 85, 247, 0.2); }
+    .bg-slate-950\/80 { background-color: rgba(2, 6, 23, 0.8); }
+    .text-white { color: #ffffff; }
+    .text-black { color: #000000; }
+    .text-slate-200 { color: #e2e8f0; }
+    .text-slate-300 { color: #cbd5e1; }
+    .text-slate-400 { color: #94a3b8; }
+    .text-slate-500 { color: #64748b; }
+    .text-emerald-200 { color: #a7f3d0; }
+    .text-emerald-300 { color: #6ee7b7; }
+    .text-emerald-400 { color: #34d399; }
+    .text-purple-200 { color: #e9d5ff; }
+    .text-purple-400 { color: #c084fc; }
+    .text-amber-300 { color: #fcd34d; }
+    .text-amber-400 { color: #fbbf24; }
+    .text-rose-400 { color: #fb7185; }
+    .text-blue-400 { color: #60a5fa; }
+    .border { border-width: 1px; border-style: solid; }
+    .border-b { border-bottom-width: 1px; border-bottom-style: solid; }
+    .border-slate-700 { border-color: #334155; }
+    .border-slate-800 { border-color: #1e293b; }
+    .border-emerald-500\/30 { border-color: rgba(16, 185, 129, 0.3); }
+    .border-rose-500\/30 { border-color: rgba(244, 63, 94, 0.3); }
+    .border-purple-500\/40 { border-color: rgba(168, 85, 247, 0.4); }
+    .border-blue-800\/80 { border-color: rgba(30, 64, 175, 0.8); }
+    .border-amber-600\/50 { border-color: rgba(217, 119, 6, 0.5); }
+    .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .font-bold { font-weight: 700; }
+    .font-semibold { font-weight: 600; }
+    .text-\[10px\] { font-size: 10px; line-height: 14px; }
+    .text-\[11px\] { font-size: 11px; line-height: 15px; }
+    .text-xs { font-size: 0.75rem; line-height: 1rem; }
+    .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+    .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+    .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+    .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+    .text-center { text-align: center; }
+    .overflow-hidden { overflow: hidden; }
+    .overflow-y-auto { overflow-y: auto; }
+    .relative { position: relative; }
+    .fixed { position: fixed; }
+    .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+    .z-50 { z-index: 50; }
+    .hidden { display: none !important; }
+    .cursor-pointer { cursor: pointer; }
+    .cursor-not-allowed { cursor: not-allowed; }
+    .shadow { box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
+    .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+    .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+    .shadow-2xl { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); }
+    .object-contain { object-fit: contain; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+    .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    select, input, button { font-family: inherit; font-size: inherit; }
+    select:focus, input:focus, button:focus { outline: none; border-color: #10b981; }
   </style>
 </head>
 <body class="p-6">
@@ -901,7 +1090,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function addLog(msg) {
       const box = document.getElementById('log-box');
-      if (!msg) return;
+      if (!box || !msg) return;
       const lines = String(msg).split('\n');
       const timeStr = new Date().toLocaleTimeString();
       lines.forEach(l => {
@@ -1482,11 +1671,18 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     // Auto-refresh cameras & load file list on page load
-    window.addEventListener('DOMContentLoaded', () => {
+    function initStudio() {
       refreshCameras();
       loadFileList();
       setInterval(checkConnection, 5000);
-    });
+      setTimeout(onFileSelectionChanged, 100);
+    }
+
+    if (document.readyState === 'loading') {
+      window.addEventListener('DOMContentLoaded', initStudio);
+    } else {
+      initStudio();
+    }
   </script>
 </body>
 </html>
@@ -1499,19 +1695,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/" or parsed.path == "/index.html":
+            files = get_available_workspace_files()
+            options_html = "\n".join(f'<option value="{f}">{f}</option>' for f in files) if files else '<option value="Cut_size.svg">Cut_size.svg</option>'
+            page_content = HTML_PAGE.replace('<option value="Cut.svg">Cut.svg</option>', options_html)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            self.wfile.write(page_content.encode("utf-8"))
         elif parsed.path == "/api/files":
-            valid_exts = (".svg", ".gcode", ".nc", ".gc", ".tap")
-            file_set = set()
-            for d in [WORKSPACE_DIR, os.path.join(WORKSPACE_DIR, "samples")]:
-                if os.path.isdir(d):
-                    for f in os.listdir(d):
-                        if f.lower().endswith(valid_exts):
-                            file_set.add(f)
-            files = sorted(list(file_set), key=lambda x: (0 if x.lower() == "cut.svg" else 1, x.lower()))
+            files = get_available_workspace_files()
             resp = {"status": "ok", "files": files}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1755,7 +1947,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 out_filename = f"{base_name}_cutter.gcode"
                 out_filepath = os.path.join(WORKSPACE_DIR, out_filename)
 
-                cmd = [sys.executable, "vision_cutter.py", "--svg", filename, "--output", out_filename, "--mock"]
+                cmd = [PYTHON_EXE, "vision_cutter.py", "--svg", filename, "--output", out_filename, "--mock"]
                 cfg = load_config()
                 z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
                 if z_lift_swivel > 0.0:
@@ -2012,7 +2204,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             force_home = query.get("force_home", ["0"])[0]
             search_mode = query.get("search_mode", ["auto"])[0]
 
-            cmd = [sys.executable, "vision_cutter.py", "--svg", filename]
+            cmd = [PYTHON_EXE, "vision_cutter.py", "--svg", filename]
 
             if is_scan:
                 cmd.append("--no-upload")

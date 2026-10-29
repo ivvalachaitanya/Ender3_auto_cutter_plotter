@@ -53,11 +53,12 @@ class FiducialDetector:
             else:
                 self.aruco_detector = None
 
-    def detect_aruco_markers(self, frame: np.ndarray) -> Dict[int, Tuple[float, float]]:
+    def detect_aruco_markers(self, frame: np.ndarray, log_warnings: bool = True) -> Dict[int, Tuple[float, float]]:
         """
         Detect ArUco markers in frame.
 
         :param frame: BGR or Grayscale frame image
+        :param log_warnings: Whether to log marker detections/warnings (set False for high-FPS video streaming)
         :return: Dictionary mapping marker ID to center pixel coordinate (u, v)
         """
         if frame is None or frame.size == 0:
@@ -77,9 +78,11 @@ class FiducialDetector:
                 center_u = float(np.mean(pts[:, 0]))
                 center_v = float(np.mean(pts[:, 1]))
                 results[int(marker_id)] = (center_u, center_v)
-                logger.info("Detected ArUco ID %d at pixel (%.2f, %.2f)", marker_id, center_u, center_v)
+                if log_warnings:
+                    logger.info("Detected ArUco ID %d at pixel (%.2f, %.2f)", marker_id, center_u, center_v)
         else:
-            logger.warning("No ArUco markers detected in frame.")
+            if log_warnings:
+                logger.warning("No ArUco markers detected in frame.")
 
         return results
 
