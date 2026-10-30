@@ -95,6 +95,7 @@ def parse_args():
     parser.add_argument("--use-cached-alignment", action="store_true", help="Reuse previously solved 2D affine matrix from affine_matrix.json if available.")
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
     parser.add_argument("--auto-start", action="store_true", help="Automatically trigger print job via Moonraker after upload.")
+    parser.add_argument("--verify-touch", action="store_true", help="Include pre-cut touch verification routine on 3 dots and Paper (0,0) pause in G-code.")
     parser.add_argument("--mock", action="store_true", help="Run in mock offline mode (simulates Klipper & camera responses).")
 
     return parser.parse_args()
@@ -339,6 +340,27 @@ def main():
                 planned_contours.append(planned_moves)
 
         # Step 7: Generate Klipper G-code
+        touch_pts_bed = None
+        paper_origin_bed = None
+        if args.verify_touch:
+            try:
+                from src.svg_injector import extract_touch_dots
+                dots_nom, origin_nom = extract_touch_dots(args.svg, nominal_fiducials=nominal_fiducials)
+                dots_arr = np.array(dots_nom, dtype=np.float64)
+                trans_dots = TransformEstimator.transform_points(dots_arr, M)
+                touch_pts_bed = [(float(p[0]), float(p[1])) for p in trans_dots]
+
+                orig_arr = np.array([[origin_nom[0], origin_nom[1]]], dtype=np.float64)
+                trans_orig = TransformEstimator.transform_points(orig_arr, M)
+                paper_origin_bed = (float(trans_orig[0][0]), float(trans_orig[0][1]))
+
+                logger.info("Computed physical bed coordinates for Pre-Cut Touch Verification:")
+                for i, dp in enumerate(touch_pts_bed, 1):
+                    logger.info("  Touch Dot #%d: (X=%.3f, Y=%.3f)", i, dp[0], dp[1])
+                logger.info("  Paper Origin (0,0): (X=%.3f, Y=%.3f)", paper_origin_bed[0], paper_origin_bed[1])
+            except Exception as e:
+                logger.warning("Could not calculate touch verification points: %s", e)
+
         gcode_gen = GCodeGenerator(
             z_safe=args.z_safe,
             z_cut=args.z_cut,
@@ -347,7 +369,11 @@ def main():
             dry_run=args.dry_run,
             z_lift_swivel=args.z_lift_swivel,
         )
-        final_gcode = gcode_gen.generate_gcode(planned_contours)
+        final_gcode = gcode_gen.generate_gcode(
+            planned_contours,
+            touch_points=touch_pts_bed,
+            paper_origin=paper_origin_bed,
+        )
 
         # Write G-code to local file
         with open(output_filename, "w", encoding="utf-8") as f:

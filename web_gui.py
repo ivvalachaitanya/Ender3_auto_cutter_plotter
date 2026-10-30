@@ -761,6 +761,12 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="file" id="file-upload-input" onchange="uploadSelectedFile()" accept=".svg,.gcode,.nc,.gc,.tap" class="hidden">
         </div>
         <button id="load-preview-btn" onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
+        <button onclick="injectTouchDotsToSvg()" class="w-full bg-blue-700 hover:bg-blue-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
+          <span>🎯 Add 3 Test Dots to SVG</span>
+        </button>
+        <button onclick="downloadSvg()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 py-1 rounded border border-slate-700 text-[11px] font-semibold flex items-center justify-center space-x-1 shadow">
+          <span>🖨️ Download / Export SVG</span>
+        </button>
       </div>
 
       <!-- Step 2 -->
@@ -822,6 +828,9 @@ HTML_PAGE = """<!DOCTYPE html>
             </select>
           </div>
           <button id="run-scan-btn" onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>
+          <button id="verify-dots-btn" onclick="runTouchVerification()" class="w-full bg-purple-800 hover:bg-purple-700 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1 mt-1 border border-purple-500/40">
+            <span>📍 Touch-Off Test (3 Dots & Park)</span>
+          </button>
           <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
             <input type="checkbox" id="force-home-check" class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
             <span>Force G28 homing (uncheck to skip if already homed)</span>
@@ -886,6 +895,10 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="checkbox" id="dry-run" class="accent-emerald-500">
         </div>
         <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400 font-medium">Verify Dots & Pause:</span>
+          <input type="checkbox" id="verify-touch-check" class="accent-purple-500" checked title="Touch 3 test dots and pause at Paper (0,0) before cutting">
+        </div>
+        <div class="flex items-center justify-between text-xs">
           <span class="text-slate-400 font-medium">Cut Z Depth:</span>
           <div class="flex items-center space-x-1">
             <input type="number" id="quick-z-cut" step="0.05" onchange="syncQuickZCut(this.value)" class="w-16 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-right font-mono text-xs" value="0.0">
@@ -934,6 +947,40 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Alignment Touch Verification Modal -->
+  <div id="touch-verify-modal" style="display: none;" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="card max-w-md w-full p-6 space-y-4 border border-purple-500/50 shadow-2xl">
+      <div class="flex items-center space-x-3 text-purple-400">
+        <span class="text-2xl">🎯</span>
+        <div>
+          <h3 class="text-base font-bold text-white">Touch-Off Alignment Complete</h3>
+          <p class="text-xs text-slate-400">Physical accuracy verification routine</p>
+        </div>
+      </div>
+      <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-xs space-y-2 text-slate-300">
+        <p>The cutter visited the 3 test target dots on your sheet:</p>
+        <ul class="list-disc list-inside space-y-1 font-mono text-[11px] text-purple-300">
+          <li>Dot 1: Beside Marker 1 at 0° (Right)</li>
+          <li>Dot 2: Beside Marker 2 at 270° (Down)</li>
+          <li>Dot 3: Beside Marker 3 at 45° (Diagonal)</li>
+        </ul>
+        <p class="pt-1 text-emerald-400 font-semibold">📍 Blade is parked hovering at Paper Origin (0, 0).</p>
+      </div>
+      <div class="text-xs text-slate-300 font-medium">
+        Did the needle touch all 3 target dots accurately on your printed sheet?
+      </div>
+      <div class="grid grid-cols-2 gap-2 pt-2">
+        <button onclick="confirmTouchAndCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg flex items-center justify-center space-x-1">
+          <span>🚀 Yes, Start Vinyl Cut</span>
+        </button>
+        <button onclick="adjustOffsetsFromVerify()" class="w-full bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold py-2 rounded text-xs border border-amber-500/40 flex items-center justify-center space-x-1">
+          <span>⚙️ Adjust Offsets</span>
+        </button>
+      </div>
+      <button onclick="closeTouchVerifyModal()" class="w-full text-slate-500 hover:text-slate-300 text-[11px] pt-1">Dismiss & Keep Parked</button>
     </div>
   </div>
 
@@ -1628,6 +1675,110 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    function injectTouchDotsToSvg() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select an SVG file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
+      addLog(`[SVG] Injecting 3 verification touch dots and Paper (0,0) mark into '${file}'...`);
+
+      fetch(`/api/inject_touch_dots?file=${encodeURIComponent(file)}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          addLog(data.message);
+          if (data.status === 'ok') {
+            loadPreview();
+            alert(`Verification dots successfully added to '${file}'!\n\n3 Target dots have been positioned beside fiducials:\n- Dot 1: 0° (Right)\n- Dot 2: 270° (Down)\n- Dot 3: 45° (Diagonal)\n- Paper Origin (0,0): Bottom-left corner\n\nPreview reloaded. Use 'Print Sheet (1:1)' in Step 2 to print!`);
+          } else {
+            alert("Failed to inject dots: " + data.message);
+          }
+        })
+        .catch(err => addLog(`[ERROR] SVG injection failed: ${err.message}`));
+    }
+
+    function downloadSvg() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file first.");
+        return;
+      }
+      const file = select.value;
+      window.location.href = `/api/download_svg?file=${encodeURIComponent(file)}`;
+    }
+
+    function runTouchVerification() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
+      const quickZInp = document.getElementById('quick-z-cut');
+      const zCut = quickZInp ? quickZInp.value : '0.0';
+
+      const btn = document.getElementById('verify-dots-btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.className = "w-full bg-purple-950 text-purple-300 font-semibold py-1.5 rounded text-xs shadow cursor-not-allowed animate-pulse flex items-center justify-center space-x-1 mt-1 border border-purple-500/40";
+        btn.innerHTML = "<span>⏳ Visiting 3 Test Dots & Parking at (0,0)...</span>";
+      }
+
+      addLog(`[VERIFY] Initiating physical touch-off test for '${file}'...`);
+      addLog(`[VERIFY] Blade will touch Dot 1 (0°), Dot 2 (270°), Dot 3 (45°), then park at Paper (0,0).`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+      fetch(`/api/verify_touch_dots?file=${encodeURIComponent(file)}&z_cut=${encodeURIComponent(zCut)}`, {
+        method: 'POST',
+        signal: controller.signal
+      })
+      .then(r => r.json())
+      .then(data => {
+        addLog(data.message);
+        if (data.status === 'ok') {
+          openTouchVerifyModal();
+        } else {
+          addLog('[ERROR] Touch verification failed: ' + data.message);
+          alert('Verification move failed: ' + data.message);
+        }
+      })
+      .catch(err => {
+        addLog(`[ERROR] Verification request failed: ${err.message}`);
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+        if (btn) {
+          btn.disabled = false;
+          btn.className = "w-full bg-purple-800 hover:bg-purple-700 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1 mt-1 border border-purple-500/40";
+          btn.innerHTML = "<span>📍 Touch-Off Test (3 Dots & Park)</span>";
+        }
+      });
+    }
+
+    function openTouchVerifyModal() {
+      const m = document.getElementById('touch-verify-modal');
+      if (m) m.style.display = 'flex';
+    }
+
+    function closeTouchVerifyModal() {
+      const m = document.getElementById('touch-verify-modal');
+      if (m) m.style.display = 'none';
+    }
+
+    function confirmTouchAndCut() {
+      closeTouchVerifyModal();
+      addLog("[VERIFY] User confirmed needle alignment! Starting vinyl cut...");
+      runCut();
+    }
+
+    function adjustOffsetsFromVerify() {
+      closeTouchVerifyModal();
+      openSettingsModal();
+    }
+
     function downloadGcode() {
       const select = document.getElementById('svg-file');
       if (!select || !select.value) {
@@ -1640,7 +1791,9 @@ HTML_PAGE = """<!DOCTYPE html>
       const quickZInp = document.getElementById('quick-z-cut');
       const zCutVal = quickZInp ? quickZInp.value : '';
       addLog(`[GCODE] Generating & downloading Klipper G-code for '${file}'...`);
-      window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}&z_cut=${encodeURIComponent(zCutVal)}`;
+      const verifyCheck = document.getElementById('verify-touch-check');
+      const verifyTouch = (verifyCheck && verifyCheck.checked) ? '1' : '0';
+      window.location.href = `/api/download_gcode?file=${encodeURIComponent(file)}&dry=${dry}&z_cut=${encodeURIComponent(zCutVal)}&verify_touch=${verifyTouch}`;
     }
 
     function runCut() {
@@ -1665,7 +1818,9 @@ HTML_PAGE = """<!DOCTYPE html>
       addLog(`[CUTTER] Processing '${file}' & sending G-code to Ender 3 cutter...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
-      fetch(`/api/cut?file=${encodeURIComponent(file)}&dry=${encodeURIComponent(dry)}&z_cut=${encodeURIComponent(zCutVal)}`, { method: 'POST', signal: controller.signal })
+      const verifyCheck = document.getElementById('verify-touch-check');
+      const verifyTouch = (verifyCheck && verifyCheck.checked) ? '1' : '0';
+      fetch(`/api/cut?file=${encodeURIComponent(file)}&dry=${encodeURIComponent(dry)}&z_cut=${encodeURIComponent(zCutVal)}&verify_touch=${verifyTouch}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
           addLog(data.message);
@@ -1978,6 +2133,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             else:
                 resp = {"status": "error", "message": f"File '{filename}' not found."}
 
+        elif parsed.path == "/api/download_svg":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut.svg"])[0]
+            filepath = resolve_workspace_file(filename)
+            if os.path.isfile(filepath):
+                with open(filepath, "rb") as f:
+                    svg_bytes = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(svg_bytes)))
+                self.end_headers()
+                self.wfile.write(svg_bytes)
+                return
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+
         elif parsed.path == "/api/download_gcode":
             query = parse_qs(parsed.query)
             filename = query.get("file", ["Cut.svg"])[0]
@@ -1990,6 +2164,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 out_filepath = os.path.join(WORKSPACE_DIR, out_filename)
 
                 cmd = [PYTHON_EXE, "vision_cutter.py", "--svg", filename, "--output", out_filename, "--mock"]
+                affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+                if os.path.isfile(affine_file):
+                    try:
+                        with open(affine_file, "r", encoding="utf-8") as f:
+                            af_data = json.load(f)
+                        if af_data.get("file") == filename or (time.time() - af_data.get("timestamp", 0)) < 3600:
+                            cmd.append("--use-cached-alignment")
+                    except Exception:
+                        pass
                 cfg = load_config()
                 z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
                 if z_lift_swivel > 0.0:
@@ -2001,6 +2184,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         cmd.extend(["--z-cut", str(float(z_cut_param))])
                     except ValueError:
                         pass
+
+                verify_touch = query.get("verify_touch", ["1"])[0]
+                if verify_touch == "1" or verify_touch == "true":
+                    cmd.append("--verify-touch")
 
                 if dry_flag == "1" or dry_flag == "true":
                     cmd.append("--dry-run")
@@ -2245,6 +2432,90 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))
 
+        elif parsed.path == "/api/inject_touch_dots":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut.svg"])[0]
+            filepath = resolve_workspace_file(filename)
+            try:
+                from src.svg_injector import inject_verification_dots
+                res = inject_verification_dots(filepath)
+            except Exception as e:
+                res = {"status": "error", "message": str(e)}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
+
+        elif parsed.path == "/api/verify_touch_dots":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut.svg"])[0]
+            z_cut_param = query.get("z_cut", ["0.0"])[0]
+            try:
+                z_cut = float(z_cut_param)
+            except ValueError:
+                z_cut = 0.0
+
+            filepath = resolve_workspace_file(filename)
+            affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+            if not os.path.isfile(affine_file):
+                resp = {"status": "error", "message": "No affine alignment matrix found. Please run Step 3 'Run Autonomous Scan & Align' first."}
+            else:
+                try:
+                    with open(affine_file, "r", encoding="utf-8") as f:
+                        af_data = json.load(f)
+                    M = np.array(af_data["matrix"], dtype=np.float64)
+
+                    from src.svg_injector import extract_touch_dots
+                    from src.vision_detector import TransformEstimator
+
+                    cfg = load_config()
+                    bed_height = cfg.get("bed_height_mm", 220.0)
+                    nom_fids = cfg.get("nominal_fiducials", None)
+                    dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, nominal_fiducials=nom_fids)
+
+                    dots_arr = np.array(dots_nom, dtype=np.float64)
+                    trans_dots = TransformEstimator.transform_points(dots_arr, M)
+                    touch_pts_bed = [(float(p[0]), float(p[1])) for p in trans_dots]
+
+                    orig_arr = np.array([[origin_nom[0], origin_nom[1]]], dtype=np.float64)
+                    trans_orig = TransformEstimator.transform_points(orig_arr, M)
+                    paper_origin_bed = (float(trans_orig[0][0]), float(trans_orig[0][1]))
+
+                    moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
+                    z_safe = cfg.get("z_safe_mm", 5.0)
+                    f_travel = cfg.get("f_travel_mm_min", 3000.0)
+                    f_plunge = 127.0
+
+                    from src.moonraker_client import MoonrakerClient
+                    mr = MoonrakerClient(base_url=moonraker_url)
+                    if not mr.is_connected():
+                        resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                    else:
+                        mr.jog_to(z=z_safe, feedrate=f_travel, wait_finish=True)
+                        for dx, dy in touch_pts_bed:
+                            mr.jog_to(x=dx, y=dy, z=z_safe, feedrate=f_travel, wait_finish=True)
+                            mr.jog_to(z=z_cut, feedrate=f_plunge, wait_finish=True)
+                            time.sleep(1.5)
+                            mr.jog_to(z=z_safe, feedrate=f_travel, wait_finish=True)
+
+                        mr.jog_to(x=paper_origin_bed[0], y=paper_origin_bed[1], z=z_safe, feedrate=f_travel, wait_finish=True)
+                        mr.jog_to(z=1.0, feedrate=1500.0, wait_finish=True)
+
+                        resp = {
+                            "status": "ok",
+                            "message": "Blade touched 3 verification dots and is parked hovering at Paper (0,0).",
+                            "dots_bed": touch_pts_bed,
+                            "paper_origin_bed": paper_origin_bed
+                        }
+                except Exception as e:
+                    resp = {"status": "error", "message": f"Verification move failed: {e}"}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
         elif parsed.path == "/api/scan" or parsed.path == "/api/cut":
             is_scan = parsed.path == "/api/scan"
             filename = query.get("file", ["Cut1.svg"])[0]
@@ -2303,6 +2574,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     save_config(cfg)
                 except ValueError:
                     pass
+
+            verify_touch = query.get("verify_touch", ["1"])[0]
+            if not is_scan and (verify_touch == "1" or verify_touch == "true"):
+                cmd.append("--verify-touch")
 
             if dry_flag:
                 cmd.append(dry_flag)

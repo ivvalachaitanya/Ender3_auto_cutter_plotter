@@ -59,8 +59,8 @@ class SVGParser:
             for elem in svg.elements():
                 if isinstance(elem, svgelements.Path) and len(elem) > 0:
                     elem_id = str(getattr(elem, 'id', '')).lower()
-                    if 'fiducial' in elem_id or 'aruco' in elem_id:
-                        logger.info("Skipping fiducial marker path ID '%s' from cut list.", elem_id)
+                    if any(s in elem_id for s in ('fiducial', 'aruco', 'verification', 'touch_', 'paper_origin')):
+                        logger.info("Skipping non-cut verification/fiducial element ID '%s' from cut list.", elem_id)
                         continue
 
                     contour: List[Tuple[float, float]] = []
@@ -269,11 +269,18 @@ class GCodeGenerator:
         self.z_lift_swivel = z_lift_swivel
         self.pause_before_cut = pause_before_cut
 
-    def generate_gcode(self, planned_contours: List[List[Dict[str, Union[str, float, Tuple[float, float]]]]]) -> str:
+    def generate_gcode(
+        self,
+        planned_contours: List[List[Dict[str, Union[str, float, Tuple[float, float]]]]],
+        touch_points: Optional[List[Tuple[float, float]]] = None,
+        paper_origin: Optional[Tuple[float, float]] = None,
+    ) -> str:
         """
         Generate complete G-code string for all parsed and planned contours.
 
         :param planned_contours: List of move sequences (one sequence per path contour)
+        :param touch_points: Optional list of 3 (X, Y) physical bed coordinates to touch before cutting
+        :param paper_origin: Optional (X, Y) physical bed coordinate of paper origin (0,0) to park at
         :return: Multi-line G-code string
         """
         lines = []
@@ -291,7 +298,35 @@ class GCodeGenerator:
         lines.append("BED_MESH_PROFILE LOAD=default ; Load Klipper bed warp compensation mesh")
         lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Move to clearance level")
 
-        if self.pause_before_cut:
+        # Optional Pre-Cut Touch Verification Routine
+        if touch_points and len(touch_points) >= 3:
+            lines.append("")
+            lines.append("; ========================================================")
+            lines.append("; --- Pre-Cut Touch Verification Routine ---")
+            lines.append("; Moves blade to touch 3 test dots on printed sheet,")
+            lines.append("; then parks at Paper Origin (0,0) and pauses for confirmation.")
+            lines.append("; ========================================================")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe travel height")
+            for i, pt in enumerate(touch_points, 1):
+                px, py = pt[0], pt[1]
+                lines.append(f"; --- Touch Verification Dot #{i} ---")
+                lines.append(f"G1 X{px:.4f} Y{py:.4f} F{self.f_travel:.1f} ; Move above Dot #{i}")
+                lines.append(f"G1 Z{self.z_cut:.4f} F{self.f_plunge:.1f} ; Lower needle to touch dot")
+                lines.append("G4 P1500 ; Dwell 1.5s for visual inspection")
+                lines.append(f"G1 Z{self.z_safe:.4f} F{self.f_travel:.1f} ; Lift blade to safe height")
+            if paper_origin is not None:
+                ox, oy = paper_origin[0], paper_origin[1]
+                lines.append("; --- Park at Paper Origin (0,0) ---")
+                lines.append(f"G1 X{ox:.4f} Y{oy:.4f} F{self.f_travel:.1f} ; Rapid to Paper Origin (0,0)")
+                lines.append("G1 Z1.0000 F1500.0 ; Hover 1mm above Paper (0,0)")
+            lines.append("")
+            lines.append("M117 Alignment Check: Inspect 3 dots & Resume")
+            lines.append('RESPOND TYPE=echo MSG="Needle visited 3 test dots and is parked at Paper (0,0). Inspect dots and click RESUME to cut."')
+            lines.append("PAUSE ; Pause machine and wait for user to confirm")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Lift blade back to safe height")
+            lines.append("")
+
+        if self.pause_before_cut and not touch_points:
             lines.append("")
             lines.append("; --- User Inspection Pause ---")
             lines.append("M117 Check material & click Resume")
