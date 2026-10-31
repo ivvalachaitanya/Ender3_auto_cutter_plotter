@@ -2591,8 +2591,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
                     cfg = load_config()
                     bed_height = cfg.get("bed_height_mm", 220.0)
-                    nom_fids = cfg.get("nominal_fiducials", None)
-                    dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, nominal_fiducials=nom_fids)
+                    design_fids = cfg.get("design_fiducials", None)
+                    dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, design_fiducials=design_fids)
 
                     dots_arr = np.array(dots_nom, dtype=np.float64)
                     trans_dots = TransformEstimator.transform_points(dots_arr, M)

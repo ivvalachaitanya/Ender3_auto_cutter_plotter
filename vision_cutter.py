@@ -345,7 +345,7 @@ def main():
         if args.verify_touch:
             try:
                 from src.svg_injector import extract_touch_dots
-                dots_nom, origin_nom = extract_touch_dots(args.svg, nominal_fiducials=nominal_fiducials)
+                dots_nom, origin_nom = extract_touch_dots(args.svg, bed_height_mm=bed_max_y, design_fiducials=design_nominal_points)
                 dots_arr = np.array(dots_nom, dtype=np.float64)
                 trans_dots = TransformEstimator.transform_points(dots_arr, M)
                 touch_pts_bed = [(float(p[0]), float(p[1])) for p in trans_dots]

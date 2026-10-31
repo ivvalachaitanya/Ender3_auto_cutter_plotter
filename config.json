@@ -2,30 +2,30 @@
   "bed_width_mm": 235,
   "bed_height_mm": 235,
   "blade_offset_mm": 0.35,
-  "camera_offset_x_mm": 19.0,
-  "camera_offset_y_mm": -1.0,
+  "camera_offset_x_mm": 19,
+  "camera_offset_y_mm": 1,
   "mm_per_pixel": 0.0293,
   "z_safe_mm": 5,
-  "z_scan_mm": 20,
   "z_cut_mm": 0,
   "z_lift_swivel_mm": 0,
   "f_cut_mm_min": 1200,
   "f_travel_mm_min": 3000,
   "moonraker_url": "http://192.168.1.20:7125",
   "crowsnest_url": "http://192.168.1.20/webcam/?action=stream",
+  "z_scan_mm": 20,
   "search_mode": "auto",
   "nominal_fiducials": [
     [
-      5.098,
-      232.114
+      5.542,
+      221.861
     ],
     [
-      174.702,
-      232.092
+      172.422,
+      220.169
     ],
     [
-      5.103,
-      42.293
+      3.651,
+      35.436
     ]
   ],
   "design_fiducials": [

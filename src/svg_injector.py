@@ -571,24 +571,28 @@ def inject_verification_dots(
 def extract_touch_dots(
     svg_path: str,
     bed_height_mm: float = 220.0,
+    design_fiducials: Optional[List[List[float]]] = None,
     nominal_fiducials: Optional[List[List[float]]] = None,
 ) -> Tuple[List[Tuple[float, float]], Tuple[float, float]]:
     """
     Extract or derive the 3 verification touch dots and Paper Origin (0,0) in Bed coordinate space.
 
     If the SVG has injected touch dots (<circle id="touch_dot_1">), their exact positions are extracted.
-    Otherwise, they are calculated relative to nominal fiducials:
+    Otherwise, they are calculated relative to design fiducials in SVG space:
       - Dot 1: Beside F1 (Back-Left) at 0° (+16mm X)
       - Dot 2: Beside F2 (Back-Right) at 270° (-16mm Y)
       - Dot 3: Beside F3 (Front-Left) at 45° (+14mm X, +14mm Y)
 
     :param svg_path: Path to SVG file
     :param bed_height_mm: Bed / SVG height in mm
-    :param nominal_fiducials: Optional 3x2 list of fiducial positions in bed space
-    :return: (List of 3 (X, Y) touch dot positions in bed space, Paper Origin (0,0) in bed space)
+    :param design_fiducials: Optional 3x2 list of fiducial positions in SVG design space (e.g. [[15, 205], [185, 205], [15, 15]])
+    :param nominal_fiducials: Deprecated alias for design_fiducials (retained for backward compatibility)
+    :return: (List of 3 (X, Y) touch dot positions in bed space, Paper Origin in bed space)
     """
     dots_bed: List[Tuple[float, float]] = []
-    paper_origin_bed = (0.0, 0.0)
+    paper_origin_bed = (2.0, 2.0)
+    width_mm = 210.0
+    height_mm = bed_height_mm
 
     if os.path.isfile(svg_path):
         try:
@@ -606,6 +610,13 @@ def extract_touch_dots(
                         dot_map[num] = (cx, height_mm - cy)
                     except (ValueError, TypeError):
                         pass
+                elif elem_id == "paper_origin_dot":
+                    try:
+                        ox = float(elem.attrib.get("cx", 0))
+                        oy = float(elem.attrib.get("cy", 0))
+                        paper_origin_bed = (ox, height_mm - oy)
+                    except (ValueError, TypeError):
+                        pass
 
             if len(dot_map) >= 3:
                 dots_bed = [dot_map[1], dot_map[2], dot_map[3]]
@@ -613,16 +624,25 @@ def extract_touch_dots(
         except Exception:
             pass
 
-    # Derive from nominal fiducials
-    fids = nominal_fiducials
-    if (fids is None or len(fids) == 0) and os.path.isfile(svg_path):
+    # Derive from SVG fiducials or design fiducials
+    fids = None
+    if os.path.isfile(svg_path):
         from src.vision_detector import extract_svg_fiducials
-        extracted = extract_svg_fiducials(svg_path, bed_height_mm=bed_height_mm)
+        extracted = extract_svg_fiducials(svg_path, bed_height_mm=height_mm)
         if extracted is not None and len(extracted) >= 3:
             fids = extracted.tolist()
 
     if fids is None or len(fids) < 3:
-        fids = [[15.0, 205.0], [185.0, 205.0], [15.0, 15.0]]
+        cand_fids = design_fiducials or nominal_fiducials
+        # Validate that cand_fids are nominal design points, NOT gantry coordinates
+        # Gantry coordinates typically have X < 10 for F1 when F1 is at X=15 with 19mm offset
+        if cand_fids and len(cand_fids) >= 3:
+            # Check if this looks like design fiducials (e.g. F1 X around 15, F2 X around 185)
+            if cand_fids[1][0] > 100 and cand_fids[0][0] >= 10:
+                fids = cand_fids
+
+    if fids is None or len(fids) < 3:
+        fids = [[15.0, height_mm - 15.0], [width_mm - 25.0, height_mm - 15.0], [15.0, 15.0]]
 
     f1, f2, f3 = fids[0], fids[1], fids[2]
     d1 = (f1[0] + 16.0, f1[1])
