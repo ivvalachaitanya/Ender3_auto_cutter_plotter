@@ -326,7 +326,7 @@ class GCodeGenerator:
 
             lines.append("")
             lines.append("M117 Alignment Check: Inspect dots & Resume")
-            lines.append(f'RESPOND TYPE=echo MSG="Needle visited test dots & origin. Lifted to safe Z ({self.z_safe:.1f}mm). Click RESUME to cut."')
+            lines.append(f'RESPOND TYPE=echo MSG="Needle visited test dots & origin. Lifted to safe Z ({self.z_safe:.1f}mm). Click RESUME / RESUME_BASE to cut."')
             lines.append("PAUSE ; Pause machine safely at safe height")
             lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Maintain safe travel height upon resume")
             lines.append("")

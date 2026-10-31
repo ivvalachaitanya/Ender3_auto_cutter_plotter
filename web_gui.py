@@ -984,6 +984,14 @@ HTML_PAGE = """<!DOCTYPE html>
           </button>
         </div>
         <button id="run-cut-btn" onclick="runCut()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs shadow-lg">🚀 START VINYL CUT</button>
+        <div class="grid grid-cols-2 gap-2 pt-1">
+          <button id="resume-cut-btn" onclick="resumeCut()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1" title="Resume paused print (sends RESUME_BASE to bypass cold extruder check)">
+            <span>▶ RESUME CUT</span>
+          </button>
+          <button id="cancel-cut-btn" onclick="cancelCut()" class="w-full bg-rose-800 hover:bg-rose-700 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1" title="Cancel active print job">
+            <span>⏹ CANCEL</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -2005,6 +2013,33 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     // Connection health monitor
+    function resumeCut() {
+      addLog("[RESUME] Sending resume command (RESUME_BASE to bypass extruder temperature checks)...");
+      const btn = document.getElementById('resume-cut-btn');
+      if (btn) { btn.disabled = true; btn.innerText = "⏳ Resuming..."; }
+      fetch('/api/resume', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          addLog(`[RESUME] ${data.message}`);
+          if (data.status !== 'ok') {
+            alert("Resume failed: " + data.message + "\n\nTip: In Mainsail console, type RESUME_BASE or set min_extrude_temp: 0 in printer.cfg.");
+          }
+        })
+        .catch(err => addLog(`[ERROR] Resume request failed: ${err.message}`))
+        .finally(() => {
+          if (btn) { btn.disabled = false; btn.innerHTML = "<span>▶ RESUME CUT</span>"; }
+        });
+    }
+
+    function cancelCut() {
+      if (!confirm("Are you sure you want to cancel the active print job?")) return;
+      addLog("[CANCEL] Canceling active print job...");
+      fetch('/api/cancel', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => addLog(`[CANCEL] ${data.message}`))
+        .catch(err => addLog(`[ERROR] Cancel failed: ${err.message}`));
+    }
+
     function checkConnection() {
       fetch('/api/settings', { cache: 'no-store' })
         .then(r => r.json())
@@ -2653,6 +2688,53 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
+
+        elif parsed.path == "/api/resume":
+            try:
+                cfg = load_config()
+                moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
+                from src.moonraker_client import MoonrakerClient
+                mr = MoonrakerClient(base_url=moonraker_url)
+                if not mr.is_connected():
+                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                else:
+                    # Send RESUME_BASE first to bypass temperature checks; fall back to RESUME
+                    success = mr.send_gcode("RESUME_BASE")
+                    if not success:
+                        success = mr.send_gcode("RESUME")
+                    if success:
+                        resp = {"status": "ok", "message": "Cut resumed successfully via RESUME_BASE."}
+                    else:
+                        resp = {"status": "error", "message": "Failed to send resume command to Moonraker."}
+            except Exception as e:
+                resp = {"status": "error", "message": f"Resume failed: {e}"}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/cancel":
+            try:
+                cfg = load_config()
+                moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
+                from src.moonraker_client import MoonrakerClient
+                mr = MoonrakerClient(base_url=moonraker_url)
+                if not mr.is_connected():
+                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                else:
+                    success = mr.send_gcode("CANCEL_PRINT")
+                    if success:
+                        resp = {"status": "ok", "message": "Print job canceled."}
+                    else:
+                        resp = {"status": "error", "message": "Failed to cancel print job."}
+            except Exception as e:
+                resp = {"status": "error", "message": f"Cancel failed: {e}"}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
 
         elif parsed.path == "/api/verify_touch_dots":
             query = parse_qs(parsed.query)
