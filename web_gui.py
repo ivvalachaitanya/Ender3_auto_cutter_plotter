@@ -78,6 +78,8 @@ DEFAULT_CONFIG = {
     "f_travel_mm_min": 3000.0,
     "moonraker_url": "http://localhost:7125",
     "crowsnest_url": "http://localhost:8080/?action=stream",
+    "camera_settle_seconds": 2.0,
+    "search_mode": "assisted",
 }
 
 
@@ -824,11 +826,15 @@ HTML_PAGE = """<!DOCTYPE html>
           <div>
             <label class="text-[11px] text-slate-400 block mb-1">Search Strategy & Speed Profile:</label>
             <select id="search-mode-select" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-purple-300 font-mono">
-              <option value="auto" selected>⚡ Auto-Cascade (Fastest ➔ Spiral ➔ Deep)</option>
+              <option value="assisted" selected>🎯 Assisted Align (Wait for Paper Adjust ➔ Auto 2 & 3)</option>
+              <option value="auto">⚡ Auto-Cascade (Fastest ➔ Spiral ➔ Deep)</option>
               <option value="fast">🚀 Turbo / Direct (Fastest ~5s, exact hit)</option>
               <option value="spiral">🌀 Adaptive Spiral (Standard ~15s, local expansion)</option>
               <option value="exhaustive">🔍 Exhaustive Bed Sweep (Deep ~45s, arbitrary placement)</option>
             </select>
+            <p class="text-[10px] text-slate-400 mt-1 leading-relaxed" id="search-mode-hint">
+              <span class="text-purple-400 font-semibold">Tip:</span> Parks at Marker 1 & dwells 2s for camera stabilization. Adjust paper under camera; once Marker 1 is spotted, it auto-locks Markers 2 & 3.
+            </p>
           </div>
           <button id="run-scan-btn" onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>
           <button id="verify-dots-btn" onclick="runTouchVerification()" class="w-full bg-purple-800 hover:bg-purple-700 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1 mt-1 border border-purple-500/40">
@@ -1037,6 +1043,11 @@ HTML_PAGE = """<!DOCTYPE html>
           <div>
             <label class="text-slate-400 block mb-1">Camera Scale (mm / pixel):</label>
             <input type="number" id="cfg-mm-px" step="0.001" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Camera Settle Dwell (seconds):</label>
+            <input type="number" id="cfg-camera-settle" step="0.5" min="0.5" max="10.0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            <span class="text-[10px] text-slate-500">Wait time after gantry move to stabilize video feed (default: 2.0s)</span>
           </div>
         </div>
 
@@ -1317,6 +1328,12 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-cam-offset-x').value = cfg.camera_offset_x_mm;
             document.getElementById('cfg-cam-offset-y').value = cfg.camera_offset_y_mm;
             document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
+            if (document.getElementById('cfg-camera-settle')) {
+              document.getElementById('cfg-camera-settle').value = cfg.camera_settle_seconds !== undefined ? cfg.camera_settle_seconds : 2.0;
+            }
+            if (document.getElementById('search-mode-select') && cfg.search_mode) {
+              document.getElementById('search-mode-select').value = cfg.search_mode;
+            }
             document.getElementById('cfg-z-safe').value = cfg.z_safe_mm;
             document.getElementById('cfg-z-cut').value = cfg.z_cut_mm;
             document.getElementById('cfg-z-lift-swivel').value = cfg.z_lift_swivel_mm !== undefined ? cfg.z_lift_swivel_mm : 0.0;
@@ -1410,6 +1427,7 @@ HTML_PAGE = """<!DOCTYPE html>
         camera_offset_x_mm: parseFloat(document.getElementById('cfg-cam-offset-x').value),
         camera_offset_y_mm: parseFloat(document.getElementById('cfg-cam-offset-y').value),
         mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
+        camera_settle_seconds: parseFloat(document.getElementById('cfg-camera-settle')?.value) || 2.0,
         z_safe_mm: parseFloat(document.getElementById('cfg-z-safe').value),
         z_cut_mm: parseFloat(document.getElementById('cfg-z-cut').value),
         z_lift_swivel_mm: parseFloat(document.getElementById('cfg-z-lift-swivel').value) || 0.0,
@@ -1542,12 +1560,20 @@ HTML_PAGE = """<!DOCTYPE html>
       if (btn) {
         btn.disabled = true;
         btn.className = "w-full bg-purple-900 text-purple-200 font-semibold py-2 rounded text-xs shadow-md cursor-not-allowed animate-pulse";
-        btn.innerHTML = "⏳ Scanning & Centering Fiducials... (Please Wait)";
+        if (searchMode === 'assisted' || searchMode === 'manual') {
+          btn.innerHTML = "🎯 Assisted Align: Adjust paper under camera...";
+        } else {
+          btn.innerHTML = "⏳ Scanning & Centering Fiducials... (Please Wait)";
+        }
       }
 
       addLog(`[VISION] Starting fiducial scan for '${file}' using camera '${cam}' (Strategy: ${searchMode.toUpperCase()}, Force Home: ${forceHome})...`);
+      if (searchMode === 'assisted' || searchMode === 'manual') {
+        addLog('[ASSISTED ALIGN] Gantry will move to Marker 1 setup point and wait. Watch live camera feed and adjust paper under camera lens!');
+      }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const scanTimeoutMs = (searchMode === 'assisted' || searchMode === 'manual') ? 240000 : 180000;
+      const timeoutId = setTimeout(() => controller.abort(), scanTimeoutMs);
       fetch(`/api/scan?file=${encodeURIComponent(file)}&camera=${encodeURIComponent(cam)}&force_home=${forceHome ? '1' : '0'}&search_mode=${encodeURIComponent(searchMode)}`, { method: 'POST', signal: controller.signal })
         .then(r => r.json())
         .then(data => {
@@ -2668,6 +2694,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             cmd.extend(["--search-mode", search_mode])
 
             cfg = load_config()
+            settle_secs = cfg.get("camera_settle_seconds", 2.0)
+            cmd.extend(["--settle-seconds", str(settle_secs)])
             moonraker_url = cfg.get("moonraker_url", "http://localhost:7125")
             crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
 

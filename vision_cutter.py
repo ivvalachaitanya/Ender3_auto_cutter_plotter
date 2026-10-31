@@ -85,9 +85,15 @@ def parse_args():
     parser.add_argument(
         "--search-mode",
         type=str,
-        choices=["auto", "fast", "spiral", "exhaustive"],
-        default=cfg.get("search_mode", "auto"),
-        help="Fiducial search preference: 'auto' (Fastest -> Spiral -> Deep cascade), 'fast' (Turbo direct ~5s), 'spiral' (Adaptive ~15s), 'exhaustive' (Full-bed sweep ~45s).",
+        choices=["assisted", "manual", "auto", "fast", "spiral", "exhaustive"],
+        default=cfg.get("search_mode", "assisted"),
+        help="Fiducial search preference: 'assisted'/'manual' (Pause at Marker 1 for paper adjust -> auto-lock 2 & 3), 'auto' (Cascade), 'fast' (Turbo direct ~5s), 'spiral' (Adaptive ~15s), 'exhaustive' (Full-bed sweep ~45s).",
+    )
+    parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=cfg.get("camera_settle_seconds", 2.0),
+        help="Wait time (seconds) after each gantry move to allow camera feed to stabilize (default: 2.0s).",
     )
     parser.add_argument("--no-auto-search", action="store_true", help="Disable autonomous spiral search and rigid geometric projection.")
     parser.add_argument("--force-home", action="store_true", help="Force printer G28 homing even if axes are already homed.")
@@ -210,6 +216,7 @@ def main():
                 camera_offset_y=args.camera_offset_y,
                 mm_per_pixel=args.mm_per_pixel,
                 search_mode=args.search_mode,
+                settle_seconds=args.settle_seconds,
             )
             try:
                 cfg["nominal_fiducials"] = measured_gantry_points.tolist()

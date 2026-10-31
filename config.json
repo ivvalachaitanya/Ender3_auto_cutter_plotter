@@ -13,7 +13,7 @@
   "moonraker_url": "http://192.168.1.20:7125",
   "crowsnest_url": "http://192.168.1.20/webcam/?action=stream",
   "z_scan_mm": 20,
-  "search_mode": "auto",
+  "search_mode": "assisted",
   "nominal_fiducials": [
     [
       5.542,
@@ -41,5 +41,6 @@
       15.0,
       15.0
     ]
-  ]
+  ],
+  "camera_settle_seconds": 2.0
 }

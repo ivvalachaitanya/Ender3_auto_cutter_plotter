@@ -342,7 +342,7 @@ class FiducialSearcher:
         bed_max_y: float = 235.0,
         mm_per_pixel: float = 0.0293,
         max_iters: int = 2,
-        settle_seconds: float = 0.35,
+        settle_seconds: float = 2.0,
         expected_id: Optional[int] = None,
     ) -> Optional[Tuple[float, float, Tuple[float, float]]]:
         """
@@ -406,7 +406,7 @@ class FiducialSearcher:
         mm_per_pixel: float = 0.0293,
         step_mm: float = 14.0,
         max_rings: int = 3,
-        settle_seconds: float = 0.35,
+        settle_seconds: float = 2.0,
         expected_id: Optional[int] = None,
     ) -> Optional[Tuple[float, float, Tuple[float, float]]]:
         """
@@ -432,7 +432,7 @@ class FiducialSearcher:
 
             # Skip redundant moves caused by bounding box clamping
             if last_gantry is None or abs(target_x - last_gantry[0]) > 0.5 or abs(target_y - last_gantry[1]) > 0.5:
-                moonraker_client.jog_to(x=target_x, y=target_y, z=z_scan, feedrate=4000.0, wait_finish=True)
+                moonraker_client.jog_to(x=target_x, y=target_y, z=z_scan, feedrate=3000.0, wait_finish=True)
                 time.sleep(settle_seconds)
                 last_gantry = (target_x, target_y)
 
@@ -481,7 +481,7 @@ class FiducialSearcher:
         bed_max_x: float = 235.0,
         bed_max_y: float = 235.0,
         mm_per_pixel: float = 0.0293,
-        settle_seconds: float = 0.35,
+        settle_seconds: float = 2.0,
     ) -> Optional[Tuple[int, float, float, Tuple[float, float]]]:
         """
         Sweep strategic bed vantage points across all quadrants until any fiducial is spotted.
@@ -515,7 +515,7 @@ class FiducialSearcher:
             target_x = max(0.0, min(bed_max_x, probe_x))
             target_y = max(0.0, min(bed_max_y, probe_y))
 
-            moonraker_client.jog_to(x=target_x, y=target_y, z=z_scan, feedrate=4500.0, wait_finish=True)
+            moonraker_client.jog_to(x=target_x, y=target_y, z=z_scan, feedrate=3000.0, wait_finish=True)
             time.sleep(settle_seconds)
 
             try:
@@ -560,7 +560,9 @@ class FiducialSearcher:
         camera_offset_x: float = 25.0,
         camera_offset_y: float = 0.0,
         mm_per_pixel: float = 0.0293,
-        search_mode: str = "auto",
+        search_mode: str = "assisted",
+        settle_seconds: float = 2.0,
+        wait_for_user_timeout: float = 180.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Autonomous 3-Fiducial Discovery & Visual Servoing Alignment Pipeline with Speed Preferences.
@@ -608,6 +610,7 @@ class FiducialSearcher:
                 bed_max_y=bed_max_y,
                 mm_per_pixel=mm_per_pixel,
                 max_rings=max_rings_m1,
+                settle_seconds=settle_seconds,
                 expected_id=exp_id_1,
             )
             if res1 is None:
@@ -640,6 +643,7 @@ class FiducialSearcher:
                 bed_max_y=bed_max_y,
                 mm_per_pixel=mm_per_pixel,
                 max_rings=max_rings_m2,
+                settle_seconds=settle_seconds,
                 expected_id=exp_id_2,
             )
             if res2 is None:
@@ -688,6 +692,7 @@ class FiducialSearcher:
                 bed_max_y=bed_max_y,
                 mm_per_pixel=mm_per_pixel,
                 max_rings=max_rings_m3,
+                settle_seconds=settle_seconds,
                 expected_id=exp_id_3,
             )
             if res3 is None:
@@ -714,6 +719,169 @@ class FiducialSearcher:
         else:
             seed_x1 = max(0.0, min(bed_max_x, d1[0] - camera_offset_x))
             seed_y1 = max(0.0, min(bed_max_y, d1[1] - camera_offset_y))
+
+        # -------------------------------------------------------------
+        # Preference 0: Assisted / Manual Paper Adjust (Wait at Marker 1)
+        # Gantry moves to Marker 1 seed and pauses for user paper adjustment.
+        # As soon as Marker 1 is spotted, it centers #1 and auto-locks #2 & #3.
+        # -------------------------------------------------------------
+        if mode in ("assisted", "manual", "paper_adjust"):
+            logger.info("======================================================")
+            logger.info("🎯 [ASSISTED ALIGN] Manual Paper Adjustment Mode Active")
+            logger.info("Jogging camera to Marker 1 setup point (X=%.2f, Y=%.2f)...", seed_x1, seed_y1)
+            logger.info("======================================================")
+            moonraker_client.jog_to(x=seed_x1, y=seed_y1, z=z_scan, feedrate=3000.0, wait_finish=True)
+            time.sleep(settle_seconds)
+
+            exp_id_1 = 0 if detector.fiducial_type == "aruco" else None
+            exp_id_2 = 1 if detector.fiducial_type == "aruco" else None
+            exp_id_3 = 2 if detector.fiducial_type == "aruco" else None
+
+            logger.info("📷 Camera is parked at Marker 1 setup point.")
+            logger.info("👉 Please slide your paper sheet on the bed so Marker #1 (ArUco ID %s) appears in the live camera feed.", exp_id_1 if exp_id_1 is not None else "any")
+            logger.info("⏳ Waiting for paper placement (Timeout: %.0fs)...", wait_for_user_timeout)
+
+            start_wait = time.time()
+            consecutive_hits = 0
+            res1 = None
+
+            while (time.time() - start_wait) < wait_for_user_timeout:
+                elapsed = int(time.time() - start_wait)
+                try:
+                    frame = camera_client.get_frame()
+                    pt = detector.detect(frame, expected_id=exp_id_1)
+                except Exception as e:
+                    logger.debug("Frame capture while waiting: %s", e)
+                    pt = None
+
+                if pt is not None:
+                    consecutive_hits += 1
+                    logger.info("👁️ Marker #1 spotted in camera frame! Verifying stability (%d/2)...", consecutive_hits)
+                    if consecutive_hits >= 2:
+                        logger.info("✅ Marker #1 steady! Centering with visual servoing...")
+                        time.sleep(0.5)
+                        res1 = FiducialSearcher.center_marker(
+                            moonraker_client=moonraker_client,
+                            camera_client=camera_client,
+                            detector=detector,
+                            gantry_x=seed_x1,
+                            gantry_y=seed_y1,
+                            z_scan=z_scan,
+                            bed_max_x=bed_max_x,
+                            bed_max_y=bed_max_y,
+                            mm_per_pixel=mm_per_pixel,
+                            settle_seconds=settle_seconds,
+                            expected_id=exp_id_1,
+                        )
+                        break
+                else:
+                    consecutive_hits = 0
+                    if elapsed > 0 and elapsed % 5 == 0:
+                        logger.info("⏳ [ASSISTED ALIGN] Waiting for paper adjustment (%ds / %.0fs)... Slide sheet until Fiducial #1 is visible in camera.", elapsed, wait_for_user_timeout)
+
+                time.sleep(0.7)
+
+            if res1 is None:
+                raise RuntimeError(f"Assisted alignment timed out after {wait_for_user_timeout:.0f} seconds without detecting Fiducial #1.")
+
+            gantry_x1, gantry_y1, pt1 = res1
+            bed_x1, bed_y1 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt1[0], pixel_v=pt1[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x1, camera_gantry_y=gantry_y1,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("✅ Fiducial #1 LOCKED at Bed (X=%.3f, Y=%.3f), Gantry (X=%.3f, Y=%.3f)", bed_x1, bed_y1, gantry_x1, gantry_y1)
+
+            # Step 2: Auto-jog to predicted Fiducial #2
+            d12_x = d2[0] - d1[0]
+            d12_y = d2[1] - d1[1]
+            pred_gantry_x2 = max(0.0, min(bed_max_x, gantry_x1 + d12_x))
+            pred_gantry_y2 = max(0.0, min(bed_max_y, gantry_y1 + d12_y))
+
+            logger.info("➡️ Auto-jogging to Fiducial #2 at Gantry (X=%.2f, Y=%.2f)...", pred_gantry_x2, pred_gantry_y2)
+            res2 = FiducialSearcher.search_and_center(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                start_x=pred_gantry_x2,
+                start_y=pred_gantry_y2,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+                max_rings=2,
+                settle_seconds=settle_seconds,
+                expected_id=exp_id_2,
+            )
+            if res2 is None:
+                raise RuntimeError("Failed to lock Fiducial #2. Please check that paper is not rotated excessively.")
+
+            gantry_x2, gantry_y2, pt2 = res2
+            bed_x2, bed_y2 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt2[0], pixel_v=pt2[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x2, camera_gantry_y=gantry_y2,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("✅ Fiducial #2 LOCKED at Bed (X=%.3f, Y=%.3f), Gantry (X=%.3f, Y=%.3f)", bed_x2, bed_y2, gantry_x2, gantry_y2)
+
+            # Step 3: Rigid Projection & Centering for Fiducial #3
+            P12_x = gantry_x2 - gantry_x1
+            P12_y = gantry_y2 - gantry_y1
+            dist_d12 = math.hypot(d12_x, d12_y)
+            dist_p12 = math.hypot(P12_x, P12_y)
+
+            scale_factor = dist_p12 / max(1.0, dist_d12)
+            theta_d = math.atan2(d12_y, d12_x)
+            theta_p = math.atan2(P12_y, P12_x)
+            d_theta = theta_p - theta_d
+
+            logger.info("Sheet Geometry Solved: Scale=%.4f, Rotation=%.2f°", scale_factor, math.degrees(d_theta))
+
+            d13_x = d3[0] - d1[0]
+            d13_y = d3[1] - d1[1]
+
+            proj_dx = scale_factor * (d13_x * math.cos(d_theta) - d13_y * math.sin(d_theta))
+            proj_dy = scale_factor * (d13_x * math.sin(d_theta) + d13_y * math.cos(d_theta))
+
+            pred_gantry_x3 = max(0.0, min(bed_max_x, gantry_x1 + proj_dx))
+            pred_gantry_y3 = max(0.0, min(bed_max_y, gantry_y1 + proj_dy))
+
+            logger.info("➡️ Auto-jogging to Fiducial #3 at Gantry (X=%.2f, Y=%.2f)...", pred_gantry_x3, pred_gantry_y3)
+            res3 = FiducialSearcher.search_and_center(
+                moonraker_client=moonraker_client,
+                camera_client=camera_client,
+                detector=detector,
+                start_x=pred_gantry_x3,
+                start_y=pred_gantry_y3,
+                z_scan=z_scan,
+                bed_max_x=bed_max_x,
+                bed_max_y=bed_max_y,
+                mm_per_pixel=mm_per_pixel,
+                max_rings=2,
+                settle_seconds=settle_seconds,
+                expected_id=exp_id_3,
+            )
+            if res3 is None:
+                raise RuntimeError("Failed to lock Fiducial #3. Please check that paper is flat on bed.")
+
+            gantry_x3, gantry_y3, pt3 = res3
+            bed_x3, bed_y3 = TransformEstimator.pixel_to_bed_space(
+                pixel_u=pt3[0], pixel_v=pt3[1],
+                frame_width=640, frame_height=480,
+                camera_gantry_x=gantry_x3, camera_gantry_y=gantry_y3,
+                mm_per_pixel=mm_per_pixel,
+                camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
+            )
+            logger.info("✅ Fiducial #3 LOCKED at Bed (X=%.3f, Y=%.3f), Gantry (X=%.3f, Y=%.3f)", bed_x3, bed_y3, gantry_x3, gantry_y3)
+
+            measured_bed = np.array([[bed_x1, bed_y1], [bed_x2, bed_y2], [bed_x3, bed_y3]], dtype=np.float64)
+            measured_gantry = np.array([[gantry_x1, gantry_y1], [gantry_x2, gantry_y2], [gantry_x3, gantry_y3]], dtype=np.float64)
+            logger.info("🎉 [ASSISTED ALIGN] Complete! All 3 fiducials successfully acquired and locked.")
+            return measured_bed, measured_gantry
 
         # -------------------------------------------------------------
         # Preference 1: Turbo / Fast (Direct Hits Only, ~5s)
@@ -754,6 +922,7 @@ class FiducialSearcher:
                 bed_max_x=bed_max_x,
                 bed_max_y=bed_max_y,
                 mm_per_pixel=mm_per_pixel,
+                settle_seconds=settle_seconds,
             )
             if sweep_res is not None:
                 marker_id, act_x, act_y, pt = sweep_res
