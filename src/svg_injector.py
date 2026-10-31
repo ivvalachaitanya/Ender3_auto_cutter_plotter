@@ -56,6 +56,63 @@ def sanitize_svg_namespaces_and_hrefs(svg_path: str) -> None:
         logger.warning("Error sanitizing SVG %s: %s", svg_path, e)
 
 
+def check_svg_has_fiducials(svg_input: Any) -> bool:
+    """
+    Check if an SVG file or ElementTree root already contains ArUco or 10x10mm corner fiducials.
+    """
+    if isinstance(svg_input, str):
+        if not os.path.isfile(svg_input):
+            return False
+        try:
+            tree = ET.parse(svg_input)
+            root = tree.getroot()
+        except Exception:
+            return False
+    elif isinstance(svg_input, ET.Element):
+        root = svg_input
+    else:
+        return False
+
+    for elem in root.iter():
+        elem_id = str(elem.attrib.get('id', '')).lower()
+        tag = elem.tag.split('}')[-1].lower()
+        if elem_id == 'aruco_fiducials' or 'aruco_marker' in elem_id:
+            return True
+        if tag == 'image':
+            try:
+                w = float(elem.attrib.get('width', 0))
+                h = float(elem.attrib.get('height', 0))
+                if (abs(w - 10.0) < 1.0 and abs(h - 10.0) < 1.0) or 'aruco' in elem_id or 'fiducial' in elem_id:
+                    return True
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
+def check_svg_has_touch_dots(svg_input: Any) -> bool:
+    """
+    Check if an SVG file or ElementTree root already contains verification touch dots.
+    """
+    if isinstance(svg_input, str):
+        if not os.path.isfile(svg_input):
+            return False
+        try:
+            tree = ET.parse(svg_input)
+            root = tree.getroot()
+        except Exception:
+            return False
+    elif isinstance(svg_input, ET.Element):
+        root = svg_input
+    else:
+        return False
+
+    for elem in root.iter():
+        elem_id = str(elem.attrib.get('id', '')).lower()
+        if elem_id == 'verification_touch_dots' or 'touch_dot_' in elem_id or elem_id == 'paper_origin_corner':
+            return True
+    return False
+
+
 def get_svg_dimensions(root: ET.Element) -> Tuple[float, float]:
     """Extract width and height in mm from SVG root."""
     width_mm = 210.0
@@ -149,7 +206,8 @@ def inject_aruco_fiducials(
     margin_x_mm: float = 10.0,
     margin_y_mm: float = 10.0,
     right_margin_offset_mm: float = 20.0,
-    config_path: Optional[str] = None
+    config_path: Optional[str] = None,
+    allow_overwrite: bool = False
 ) -> Dict[str, Any]:
     """
     Inject 3 standard OpenCV ArUco fiducials (DICT_4X4_50, IDs 0, 1, 2) into an SVG file.
@@ -167,6 +225,13 @@ def inject_aruco_fiducials(
     """
     if not os.path.isfile(svg_path):
         return {"status": "error", "message": f"File not found: {svg_path}"}
+
+    # Guard: Do not allow adding fiducials if already present
+    if not allow_overwrite and check_svg_has_fiducials(svg_path):
+        return {
+            "status": "already_exists",
+            "message": f"ArUco fiducials are already present in '{os.path.basename(svg_path)}'. Adding again is not permitted to prevent duplicates."
+        }
 
     tree = ET.parse(svg_path)
     root = tree.getroot()
@@ -262,7 +327,7 @@ def inject_aruco_fiducials(
     # If verification touch dots were already present, re-inject them to match the new fiducials
     if has_existing_dots:
         try:
-            inject_verification_dots(save_path, save_path)
+            inject_verification_dots(save_path, save_path, allow_overwrite=True)
         except Exception as de:
             logger.warning("Could not re-synchronize verification dots: %s", de)
 
@@ -305,7 +370,8 @@ def inject_aruco_fiducials(
 
 def inject_verification_dots(
     svg_path: str,
-    output_path: Optional[str] = None
+    output_path: Optional[str] = None,
+    allow_overwrite: bool = False
 ) -> Dict[str, Any]:
     """
     Inject 3 high-contrast touch verification dots and a Paper Origin (0,0) mark into an SVG.
@@ -318,10 +384,18 @@ def inject_verification_dots(
 
     :param svg_path: Path to source SVG
     :param output_path: Path to save modified SVG (if None, overwrites svg_path)
+    :param allow_overwrite: If True, allows updating existing verification dots
     :return: Dictionary containing status, dot coordinates in SVG and Bed space.
     """
     if not os.path.isfile(svg_path):
         return {"status": "error", "message": f"File not found: {svg_path}"}
+
+    # Guard: Do not allow adding test dots if already present
+    if not allow_overwrite and check_svg_has_touch_dots(svg_path):
+        return {
+            "status": "already_exists",
+            "message": f"Verification test dots are already present in '{os.path.basename(svg_path)}'. Adding again is not permitted to prevent duplicates."
+        }
 
     tree = ET.parse(svg_path)
     root = tree.getroot()

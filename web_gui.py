@@ -761,10 +761,10 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="file" id="file-upload-input" onchange="uploadSelectedFile()" accept=".svg,.gcode,.nc,.gc,.tap" class="hidden">
         </div>
         <button id="load-preview-btn" onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
-        <button onclick="injectFiducialsToSvg()" class="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
+        <button id="btn-inject-fiducials" onclick="injectFiducialsToSvg()" class="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
           <span>🏁 Add ArUco Fiducials to SVG</span>
         </button>
-        <button onclick="injectTouchDotsToSvg()" class="w-full bg-blue-700 hover:bg-blue-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
+        <button id="btn-inject-dots" onclick="injectTouchDotsToSvg()" class="w-full bg-blue-700 hover:bg-blue-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
           <span>🎯 Add 3 Test Dots to SVG</span>
         </button>
         <button onclick="downloadSvg()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 py-1 rounded border border-slate-700 text-[11px] font-semibold flex items-center justify-center space-x-1 shadow">
@@ -1497,6 +1497,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const container = document.getElementById('svg-container');
             if (container) container.innerHTML = data.svg_content;
             addLog(`Rendered SVG (${data.contours_count} contours found).`);
+            updateInjectionButtonStates(data.has_fiducials, data.has_touch_dots);
           } else {
             addLog(`Error: ${data.message}`);
           }
@@ -1678,6 +1679,39 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    function updateInjectionButtonStates(hasFids, hasDots) {
+      const fidsBtn = document.getElementById('btn-inject-fiducials');
+      const dotsBtn = document.getElementById('btn-inject-dots');
+
+      if (fidsBtn) {
+        if (hasFids) {
+          fidsBtn.disabled = true;
+          fidsBtn.className = "w-full bg-slate-800/90 text-emerald-400 font-semibold py-1.5 rounded text-xs shadow border border-emerald-800/60 cursor-not-allowed flex items-center justify-center space-x-1 opacity-80";
+          fidsBtn.innerHTML = "<span>✅ ArUco Fiducials Already Added</span>";
+          fidsBtn.title = "ArUco fiducials are already present in this file. Adding again is disabled.";
+        } else {
+          fidsBtn.disabled = false;
+          fidsBtn.className = "w-full bg-emerald-700 hover:bg-emerald-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1";
+          fidsBtn.innerHTML = "<span>🏁 Add ArUco Fiducials to SVG</span>";
+          fidsBtn.title = "Add 3 ArUco fiducials (DICT_4X4_50, 10x10mm) to sheet corners";
+        }
+      }
+
+      if (dotsBtn) {
+        if (hasDots) {
+          dotsBtn.disabled = true;
+          dotsBtn.className = "w-full bg-slate-800/90 text-blue-400 font-semibold py-1.5 rounded text-xs shadow border border-blue-800/60 cursor-not-allowed flex items-center justify-center space-x-1 opacity-80";
+          dotsBtn.innerHTML = "<span>✅ 3 Test Dots Already Added</span>";
+          dotsBtn.title = "Verification test dots are already present in this file. Adding again is disabled.";
+        } else {
+          dotsBtn.disabled = false;
+          dotsBtn.className = "w-full bg-blue-700 hover:bg-blue-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1";
+          dotsBtn.innerHTML = "<span>🎯 Add 3 Test Dots to SVG</span>";
+          dotsBtn.title = "Add 3 physical verification touch-off dots beside fiducials";
+        }
+      }
+    }
+
     function injectFiducialsToSvg() {
       const select = document.getElementById('svg-file');
       if (!select || !select.value) {
@@ -1685,6 +1719,11 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       const file = select.value;
+      const btn = document.getElementById('btn-inject-fiducials');
+      if (btn && btn.disabled) {
+        alert(`ArUco fiducials are already present in '${file}'. You cannot add them again.`);
+        return;
+      }
       addLog(`[SVG] Injecting 3 ArUco fiducials into '${file}'...`);
 
       fetch(`/api/inject_fiducials?file=${encodeURIComponent(file)}`, { method: 'POST' })
@@ -1694,6 +1733,9 @@ HTML_PAGE = """<!DOCTYPE html>
           if (data.status === 'ok') {
             loadPreview();
             alert(`ArUco Fiducials successfully added to '${file}'!\n\nAdded 3 markers (DICT_4X4_50, 10x10mm):\n- Marker 1 (ID 0): Top-Left (Back-Left)\n- Marker 2 (ID 1): Top-Right (Back-Right)\n- Marker 3 (ID 2): Bottom-Left (Front-Left)\n\nPreview reloaded. Use 'Print Sheet (1:1)' in Step 2 to print!`);
+          } else if (data.status === 'already_exists') {
+            loadPreview();
+            alert(`Notice: ${data.message}`);
           } else {
             alert("Failed to inject fiducials: " + data.message);
           }
@@ -1708,6 +1750,11 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       const file = select.value;
+      const btn = document.getElementById('btn-inject-dots');
+      if (btn && btn.disabled) {
+        alert(`Verification test dots are already present in '${file}'. You cannot add them again.`);
+        return;
+      }
       addLog(`[SVG] Injecting 3 verification touch dots and Paper (0,0) mark into '${file}'...`);
 
       fetch(`/api/inject_touch_dots?file=${encodeURIComponent(file)}`, { method: 'POST' })
@@ -1717,6 +1764,9 @@ HTML_PAGE = """<!DOCTYPE html>
           if (data.status === 'ok') {
             loadPreview();
             alert(`Verification dots successfully added to '${file}'!\n\n3 Target dots have been positioned beside fiducials:\n- Dot 1: 0° (Right)\n- Dot 2: 270° (Down)\n- Dot 3: 45° (Diagonal)\n- Paper Origin (0,0): Bottom-left corner\n\nPreview reloaded. Use 'Print Sheet (1:1)' in Step 2 to print!`);
+          } else if (data.status === 'already_exists') {
+            loadPreview();
+            alert(`Notice: ${data.message}`);
           } else {
             alert("Failed to inject dots: " + data.message);
           }
@@ -2119,7 +2169,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         from drag_knife_planner import SVGParser
                         parser_obj = SVGParser(step_size_mm=1.0)
                         contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
-                        resp = {"status": "ok", "contours_count": len(contours), "svg_content": preview_html}
+                        from src.svg_injector import check_svg_has_fiducials, check_svg_has_touch_dots
+                        has_fids = check_svg_has_fiducials(filepath)
+                        has_dots = check_svg_has_touch_dots(filepath)
+                        resp = {
+                            "status": "ok",
+                            "contours_count": len(contours),
+                            "svg_content": preview_html,
+                            "has_fiducials": has_fids,
+                            "has_touch_dots": has_dots
+                        }
                 except Exception as e:
                     resp = {"status": "error", "message": str(e)}
             else:
