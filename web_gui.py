@@ -761,6 +761,9 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="file" id="file-upload-input" onchange="uploadSelectedFile()" accept=".svg,.gcode,.nc,.gc,.tap" class="hidden">
         </div>
         <button id="load-preview-btn" onclick="loadPreview()" class="w-full btn-primary py-1.5 text-xs shadow">Load File Preview</button>
+        <button onclick="injectFiducialsToSvg()" class="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
+          <span>🏁 Add ArUco Fiducials to SVG</span>
+        </button>
         <button onclick="injectTouchDotsToSvg()" class="w-full bg-blue-700 hover:bg-blue-600 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1">
           <span>🎯 Add 3 Test Dots to SVG</span>
         </button>
@@ -1675,6 +1678,29 @@ HTML_PAGE = """<!DOCTYPE html>
         });
     }
 
+    function injectFiducialsToSvg() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select an SVG file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
+      addLog(`[SVG] Injecting 3 ArUco fiducials into '${file}'...`);
+
+      fetch(`/api/inject_fiducials?file=${encodeURIComponent(file)}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          addLog(data.message);
+          if (data.status === 'ok') {
+            loadPreview();
+            alert(`ArUco Fiducials successfully added to '${file}'!\n\nAdded 3 markers (DICT_4X4_50, 10x10mm):\n- Marker 1 (ID 0): Top-Left (Back-Left)\n- Marker 2 (ID 1): Top-Right (Back-Right)\n- Marker 3 (ID 2): Bottom-Left (Front-Left)\n\nPreview reloaded. Use 'Print Sheet (1:1)' in Step 2 to print!`);
+          } else {
+            alert("Failed to inject fiducials: " + data.message);
+          }
+        })
+        .catch(err => addLog(`[ERROR] Fiducial injection failed: ${err.message}`));
+    }
+
     function injectTouchDotsToSvg() {
       const select = document.getElementById('svg-file');
       if (!select || !select.value) {
@@ -2451,6 +2477,21 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+        elif parsed.path == "/api/inject_fiducials":
+            query = parse_qs(parsed.query)
+            filename = query.get("file", ["Cut.svg"])[0]
+            filepath = resolve_workspace_file(filename)
+            try:
+                from src.svg_injector import inject_aruco_fiducials
+                res = inject_aruco_fiducials(filepath)
+            except Exception as e:
+                res = {"status": "error", "message": str(e)}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
 
         elif parsed.path == "/api/inject_touch_dots":
             query = parse_qs(parsed.query)

@@ -1,8 +1,18 @@
+import base64
+import json
+import logging
 import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+logger = logging.getLogger(__name__)
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -17,6 +27,34 @@ ET.register_namespace('dc', "http://purl.org/dc/elements/1.1/")
 ET.register_namespace('cc', "http://creativecommons.org/ns#")
 ET.register_namespace('rdf', "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
 ET.register_namespace('osb', "http://www.openswatchbook.org/uri/2009/osb")
+
+def sanitize_svg_namespaces_and_hrefs(svg_path: str) -> None:
+    """
+    Sanitize SVG XML to ensure clean browser rendering:
+      - Normalizes any ns*:href to standard xlink:href
+      - Strips duplicate href attributes
+      - Adds standard HTML5 href alongside xlink:href
+      - Ensures xmlns:xlink is declared on the root <svg> element
+    """
+    try:
+        with open(svg_path, "r", encoding="utf-8") as f:
+            svg_text = f.read()
+
+        # 1. Normalize ns*:href to xlink:href
+        svg_text = re.sub(r'\bns\d+:href="([^"]+)"', r'xlink:href="\1"', svg_text)
+        # 2. Strip any existing standalone href="..." to prevent duplicates
+        svg_text = re.sub(r'\s+href="[^"]*"', '', svg_text)
+        # 3. Add href="..." alongside xlink:href="..."
+        svg_text = re.sub(r'xlink:href="([^"]+)"', r'xlink:href="\1" href="\1"', svg_text)
+        # 4. Ensure xmlns:xlink is present on <svg>
+        if 'xlink:href=' in svg_text and 'xmlns:xlink=' not in svg_text:
+            svg_text = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_text, count=1)
+
+        with open(svg_path, "w", encoding="utf-8") as f:
+            f.write(svg_text)
+    except Exception as e:
+        logger.warning("Error sanitizing SVG %s: %s", svg_path, e)
+
 
 def get_svg_dimensions(root: ET.Element) -> Tuple[float, float]:
     """Extract width and height in mm from SVG root."""
@@ -40,10 +78,21 @@ def get_svg_dimensions(root: ET.Element) -> Tuple[float, float]:
         if val_clean:
             try:
                 val = float(val_clean)
-                if 'in' in val_str:
+                if 'mm' in val_str:
+                    val *= 1.0
+                elif 'cm' in val_str:
+                    val *= 10.0
+                elif 'in' in val_str:
                     val *= 25.4
+                elif 'pt' in val_str:
+                    val *= (25.4 / 72.0)
+                elif 'pc' in val_str:
+                    val *= (25.4 / 6.0)
                 elif 'px' in val_str:
                     val *= (25.4 / 96.0)
+                elif val > 250:
+                    val *= (25.4 / 96.0)
+
                 if attr == 'width':
                     width_mm = val
                 else:
@@ -52,6 +101,207 @@ def get_svg_dimensions(root: ET.Element) -> Tuple[float, float]:
                 pass
 
     return width_mm, height_mm
+
+
+def generate_aruco_marker_b64(
+    marker_id: int,
+    dict_id: Optional[int] = None,
+    side_px: int = 380,
+    border_px: int = 40
+) -> str:
+    """
+    Generate an ArUco marker PNG image encoded as a base64 data URI.
+
+    Includes a 40px white quiet zone border around the marker to ensure
+    sub-pixel detection and standard browser rendering compatibility.
+    Bit-for-bit identical to standard Cutter fiducials (380x380 px).
+    """
+    if cv2 is None:
+        raise RuntimeError("OpenCV (cv2) is required to generate ArUco markers.")
+
+    dict_code = dict_id if dict_id is not None else cv2.aruco.DICT_4X4_50
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        aruco_dict = cv2.aruco.getPredefinedDictionary(dict_code)
+    else:
+        aruco_dict = cv2.aruco.Dictionary_get(dict_code)
+
+    inner_size = max(10, side_px - 2 * border_px)
+    if hasattr(cv2.aruco, "generateImageMarker"):
+        marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, inner_size, borderBits=1)
+    elif hasattr(cv2.aruco, "drawMarker"):
+        marker_img = cv2.aruco.drawMarker(aruco_dict, marker_id, inner_size)
+    else:
+        raise RuntimeError("OpenCV does not support ArUco marker generation (missing generateImageMarker and drawMarker).")
+
+    full_img = cv2.copyMakeBorder(marker_img, border_px, border_px, border_px, border_px, cv2.BORDER_CONSTANT, value=255)
+    success, buf = cv2.imencode('.png', full_img)
+    if not success:
+        raise RuntimeError(f"Failed to encode ArUco marker {marker_id} to PNG")
+
+    b64_str = base64.b64encode(buf).decode('ascii')
+    return f"data:image/png;base64,{b64_str}"
+
+
+def inject_aruco_fiducials(
+    svg_path: str,
+    output_path: Optional[str] = None,
+    marker_size_mm: float = 10.0,
+    margin_x_mm: float = 10.0,
+    margin_y_mm: float = 10.0,
+    right_margin_offset_mm: float = 20.0,
+    config_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Inject 3 standard OpenCV ArUco fiducials (DICT_4X4_50, IDs 0, 1, 2) into an SVG file.
+
+    Standard corner placement (in bed coordinates with flipped Y):
+      - Marker 0 (ID 0): Top-Left SVG (Back-Left Bed) at (margin_x_mm, margin_y_mm)
+      - Marker 1 (ID 1): Top-Right SVG (Back-Right Bed) at (width - marker_size - right_margin_offset_mm, margin_y_mm)
+      - Marker 2 (ID 2): Bottom-Left SVG (Front-Left Bed) at (margin_x_mm, height - marker_size - margin_y_mm)
+
+    The right margin offset (20mm + 10mm marker = 30mm margin from edge) ensures camera clearance
+    so the Ender 3 toolhead doesn't hit its physical X limit (235mm) when scanning Marker 1.
+
+    If verification touch dots exist in the SVG, they are automatically synchronized.
+    Also updates config.json 'design_fiducials' to match nominal coordinates.
+    """
+    if not os.path.isfile(svg_path):
+        return {"status": "error", "message": f"File not found: {svg_path}"}
+
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
+
+    width_mm, height_mm = get_svg_dimensions(root)
+
+    # Marker Top-Left corners (10x10mm each)
+    m0_x = margin_x_mm
+    m0_y = margin_y_mm
+
+    m1_x = max(margin_x_mm, width_mm - marker_size_mm - right_margin_offset_mm)
+    m1_y = margin_y_mm
+
+    m2_x = margin_x_mm
+    m2_y = max(margin_y_mm, height_mm - marker_size_mm - margin_y_mm)
+
+    # Centers in SVG coordinates
+    c0_svg = (m0_x + marker_size_mm / 2.0, m0_y + marker_size_mm / 2.0)
+    c1_svg = (m1_x + marker_size_mm / 2.0, m1_y + marker_size_mm / 2.0)
+    c2_svg = (m2_x + marker_size_mm / 2.0, m2_y + marker_size_mm / 2.0)
+
+    # Centers in Bed coordinates (Bed Y = height_mm - SVG Y)
+    c0_bed = (c0_svg[0], height_mm - c0_svg[1])  # Back-Left
+    c1_bed = (c1_svg[0], height_mm - c1_svg[1])  # Back-Right
+    c2_bed = (c2_svg[0], height_mm - c2_svg[1])  # Front-Left
+
+    # Ensure viewBox exists on root
+    if 'viewBox' not in root.attrib:
+        root.attrib['viewBox'] = f"0 0 {width_mm:.3f} {height_mm:.3f}"
+
+    # Check if verification touch dots already exist in file
+    has_existing_dots = any(c.attrib.get('id') == 'verification_touch_dots' for c in root)
+
+    # 1. Remove existing aruco_fiducials group if present
+    for child in list(root):
+        if child.attrib.get('id') == 'aruco_fiducials':
+            root.remove(child)
+
+    # 2. Also remove any standalone fiducial image elements to avoid duplicates
+    elements_to_remove = []
+    for parent in root.iter():
+        for child in list(parent):
+            tag = child.tag.split('}')[-1].lower()
+            elem_id = str(child.attrib.get('id', '')).lower()
+            if tag == 'image':
+                try:
+                    w = float(child.attrib.get('width', 0))
+                    h = float(child.attrib.get('height', 0))
+                    if (abs(w - marker_size_mm) < 1.0 and abs(h - marker_size_mm) < 1.0) or 'aruco' in elem_id:
+                        elements_to_remove.append((parent, child))
+                except (ValueError, TypeError):
+                    pass
+    for parent, child in elements_to_remove:
+        try:
+            parent.remove(child)
+        except Exception:
+            pass
+
+    # Create Group for fiducials
+    group = ET.SubElement(root, f"{{{SVG_NS}}}g", {
+        "id": "aruco_fiducials",
+        f"{{{INKSCAPE_NS}}}label": "ArUco Fiducials",
+        "style": "display:inline;"
+    })
+
+    markers_config = [
+        (0, m0_x, m0_y, "aruco_marker_0"),
+        (1, m1_x, m1_y, "aruco_marker_1"),
+        (2, m2_x, m2_y, "aruco_marker_2")
+    ]
+
+    for mid, mx, my, elem_id in markers_config:
+        b64_href = generate_aruco_marker_b64(mid)
+        ET.SubElement(group, f"{{{SVG_NS}}}image", {
+            "id": elem_id,
+            "x": f"{mx:.3f}",
+            "y": f"{my:.3f}",
+            "width": f"{marker_size_mm:.3f}",
+            "height": f"{marker_size_mm:.3f}",
+            "preserveAspectRatio": "none",
+            "style": "display:inline;image-rendering:optimizeSpeed",
+            f"{{{SODIPODI_NS}}}insensitive": "true",
+            f"{{{XLINK_NS}}}href": b64_href
+        })
+
+    # Save SVG
+    save_path = output_path if output_path else svg_path
+    tree.write(save_path, encoding="utf-8", xml_declaration=True)
+
+    # Post-process to guarantee browser-compatible image tags (both xlink:href and HTML5 href)
+    sanitize_svg_namespaces_and_hrefs(save_path)
+
+    # If verification touch dots were already present, re-inject them to match the new fiducials
+    if has_existing_dots:
+        try:
+            inject_verification_dots(save_path, save_path)
+        except Exception as de:
+            logger.warning("Could not re-synchronize verification dots: %s", de)
+
+    # Update config.json design_fiducials
+    cfg_file = config_path
+    if not cfg_file:
+        workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg_file = os.path.join(workspace_root, "config.json")
+    if os.path.isfile(cfg_file):
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as cf:
+                cfg_data = json.load(cf)
+            cfg_data["design_fiducials"] = [
+                [round(c0_bed[0], 3), round(c0_bed[1], 3)],  # Back-Left
+                [round(c1_bed[0], 3), round(c1_bed[1], 3)],  # Back-Right
+                [round(c2_bed[0], 3), round(c2_bed[1], 3)]   # Front-Left
+            ]
+            with open(cfg_file, "w", encoding="utf-8") as cf:
+                json.dump(cfg_data, cf, indent=2)
+        except Exception as ce:
+            logger.warning("Could not update config.json design_fiducials: %s", ce)
+
+    return {
+        "status": "ok",
+        "message": f"Successfully injected 3 ArUco fiducials (IDs 0, 1, 2) into {os.path.basename(save_path)}",
+        "saved_path": save_path,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+        "fiducials_bed": [
+            {"id": 0, "name": "Back-Left", "bed_x": round(c0_bed[0], 3), "bed_y": round(c0_bed[1], 3)},
+            {"id": 1, "name": "Back-Right", "bed_x": round(c1_bed[0], 3), "bed_y": round(c1_bed[1], 3)},
+            {"id": 2, "name": "Front-Left", "bed_x": round(c2_bed[0], 3), "bed_y": round(c2_bed[1], 3)}
+        ],
+        "fiducials_svg": [
+            {"id": 0, "svg_x": round(c0_svg[0], 3), "svg_y": round(c0_svg[1], 3)},
+            {"id": 1, "svg_x": round(c1_svg[0], 3), "svg_y": round(c1_svg[1], 3)},
+            {"id": 2, "svg_x": round(c2_svg[0], 3), "svg_y": round(c2_svg[1], 3)}
+        ]
+    }
 
 def inject_verification_dots(
     svg_path: str,
@@ -229,18 +479,7 @@ def inject_verification_dots(
     tree.write(save_path, encoding="utf-8", xml_declaration=True)
 
     # Post-process to guarantee browser-compatible image tags (both xlink:href and HTML5 href)
-    try:
-        with open(save_path, "r", encoding="utf-8") as f:
-            svg_text = f.read()
-
-        svg_text = re.sub(r'\b(?:ns\d+:href|xlink:href)="([^"]+)"', r'xlink:href="\1" href="\1"', svg_text)
-        if 'xlink:href=' in svg_text and 'xmlns:xlink=' not in svg_text:
-            svg_text = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_text, count=1)
-
-        with open(save_path, "w", encoding="utf-8") as f:
-            f.write(svg_text)
-    except Exception:
-        pass
+    sanitize_svg_namespaces_and_hrefs(save_path)
 
     return {
         "status": "ok",
