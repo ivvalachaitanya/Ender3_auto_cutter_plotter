@@ -2006,7 +2006,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             svg_code = f.read()
 
                         # Sanitize SVG: ensure any display:none on artwork images or layers is enabled on-the-fly
+                        import re
                         svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
+                        # Restore any ns*:href to xlink:href and add HTML5 href for reliable browser image rendering
+                        svg_code_sanitized = re.sub(r'\b(?:ns\d+:href|xlink:href)="([^"]+)"', r'xlink:href="\1" href="\1"', svg_code_sanitized)
+                        if 'xlink:href=' in svg_code_sanitized and 'xmlns:xlink=' not in svg_code_sanitized:
+                            svg_code_sanitized = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_code_sanitized, count=1)
 
                         import re
                         w_match = re.search(r'width=["\']([0-9.]+)(mm|px)?["\']', svg_code)
@@ -2108,7 +2113,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         svg_code = f.read()
+                    import re
                     svg_code_sanitized = svg_code.replace("display:none;", "display:inline;").replace("display:none", "display:inline")
+                    svg_code_sanitized = re.sub(r'\b(?:ns\d+:href|xlink:href)="([^"]+)"', r'xlink:href="\1" href="\1"', svg_code_sanitized)
+                    if 'xlink:href=' in svg_code_sanitized and 'xmlns:xlink=' not in svg_code_sanitized:
+                        svg_code_sanitized = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_code_sanitized, count=1)
                     print_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -2252,6 +2261,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if filename and file_bytes is not None:
                 save_path = os.path.join(WORKSPACE_DIR, filename)
+                # If SVG, normalize any ns*:href attributes so images render in browser
+                if filename.lower().endswith(".svg"):
+                    try:
+                        svg_text = file_bytes.decode("utf-8", errors="ignore")
+                        import re
+                        svg_text = re.sub(r'\b(?:ns\d+:href|xlink:href)="([^"]+)"', r'xlink:href="\1" href="\1"', svg_text)
+                        if 'xlink:href=' in svg_text and 'xmlns:xlink=' not in svg_text:
+                            svg_text = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_text, count=1)
+                        file_bytes = svg_text.encode("utf-8")
+                    except Exception:
+                        pass
                 with open(save_path, "wb") as f:
                     f.write(file_bytes)
                 resp = {"status": "ok", "filename": filename, "message": f"Successfully uploaded '{filename}'."}

@@ -6,9 +6,17 @@ import numpy as np
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+SODIPODI_NS = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
 
 ET.register_namespace('', SVG_NS)
+ET.register_namespace('xlink', XLINK_NS)
 ET.register_namespace('inkscape', INKSCAPE_NS)
+ET.register_namespace('sodipodi', SODIPODI_NS)
+ET.register_namespace('dc', "http://purl.org/dc/elements/1.1/")
+ET.register_namespace('cc', "http://creativecommons.org/ns#")
+ET.register_namespace('rdf', "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+ET.register_namespace('osb', "http://www.openswatchbook.org/uri/2009/osb")
 
 def get_svg_dimensions(root: ET.Element) -> Tuple[float, float]:
     """Extract width and height in mm from SVG root."""
@@ -219,6 +227,20 @@ def inject_verification_dots(
     # Save SVG
     save_path = output_path if output_path else svg_path
     tree.write(save_path, encoding="utf-8", xml_declaration=True)
+
+    # Post-process to guarantee browser-compatible image tags (both xlink:href and HTML5 href)
+    try:
+        with open(save_path, "r", encoding="utf-8") as f:
+            svg_text = f.read()
+
+        svg_text = re.sub(r'\b(?:ns\d+:href|xlink:href)="([^"]+)"', r'xlink:href="\1" href="\1"', svg_text)
+        if 'xlink:href=' in svg_text and 'xmlns:xlink=' not in svg_text:
+            svg_text = re.sub(r'(<svg\b[^>]*)', r'\1 xmlns:xlink="http://www.w3.org/1999/xlink"', svg_text, count=1)
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(svg_text)
+    except Exception:
+        pass
 
     return {
         "status": "ok",
