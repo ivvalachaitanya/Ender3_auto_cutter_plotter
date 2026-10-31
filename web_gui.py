@@ -183,6 +183,63 @@ def load_config():
     return DEFAULT_CONFIG.copy()
 
 
+def recalculate_affine_from_settings(cfg):
+    """
+    If nominal_fiducials (measured camera gantry coordinates) and affine_matrix.json exist,
+    recalculate the 2D rigid affine matrix M using updated camera offsets.
+    This allows live recalibration of touch verification dots without re-running Step 3.
+    """
+    affine_path = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+    if not os.path.isfile(affine_path):
+        return
+
+    gantry_fids = cfg.get("nominal_fiducials")
+    if not gantry_fids or len(gantry_fids) < 3:
+        return
+
+    try:
+        with open(affine_path, "r", encoding="utf-8") as f:
+            af_data = json.load(f)
+
+        design_pts = af_data.get("design_points")
+        if not design_pts or len(design_pts) < 3:
+            design_pts = cfg.get("design_fiducials", [[15.0, 205.0], [185.0, 205.0], [15.0, 15.0]])
+
+        cam_off_x = float(cfg.get("camera_offset_x_mm", 0.0))
+        cam_off_y = float(cfg.get("camera_offset_y_mm", 0.0))
+
+        # Recompute measured bed points from gantry coordinates + new camera offsets
+        new_bed_pts = []
+        for g in gantry_fids:
+            new_bed_pts.append([float(g[0]) + cam_off_x, float(g[1]) + cam_off_y])
+
+        from src.vision_detector import TransformEstimator
+        import math
+        design_arr = np.array(design_pts, dtype=np.float64)
+        bed_arr = np.array(new_bed_pts, dtype=np.float64)
+
+        M = TransformEstimator.compute_affine_matrix(design_arr, bed_arr)
+        a, b, tx = float(M[0, 0]), float(M[0, 1]), float(M[0, 2])
+        scale = float(math.sqrt(a * a + b * b))
+        angle_deg = float(math.degrees(math.atan2(b, a)))
+        ty = float(M[1, 2])
+
+        af_data["matrix"] = M.tolist()
+        af_data["scale"] = scale
+        af_data["rotation_deg"] = angle_deg
+        af_data["translation_mm"] = [tx, ty]
+        af_data["measured_bed_points"] = new_bed_pts
+        af_data["camera_offset"] = [cam_off_x, cam_off_y]
+        af_data["timestamp"] = time.time()
+
+        with open(affine_path, "w", encoding="utf-8") as f:
+            json.dump(af_data, f, indent=2)
+
+        print(f"[SETTINGS] Live updated affine_matrix.json with new camera offset ({cam_off_x}, {cam_off_y}): Tx={tx:.2f}, Ty={ty:.2f}")
+    except Exception as e:
+        print("[SETTINGS] Could not recalculate affine matrix from settings:", e)
+
+
 def save_config(new_config):
     """Save configuration dictionary to config.json."""
     config = load_config()
@@ -190,6 +247,10 @@ def save_config(new_config):
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
+
+        if "camera_offset_x_mm" in new_config or "camera_offset_y_mm" in new_config:
+            recalculate_affine_from_settings(config)
+
         return True
     except Exception as e:
         print("[ERROR] Failed to save config.json:", e)
@@ -2610,12 +2671,21 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 try:
                     with open(affine_file, "r", encoding="utf-8") as f:
                         af_data = json.load(f)
+                    cfg = load_config()
+
+                    # Live sync: verify affine_matrix.json matches current camera offsets
+                    cam_off_x = float(cfg.get("camera_offset_x_mm", 0.0))
+                    cam_off_y = float(cfg.get("camera_offset_y_mm", 0.0))
+                    af_cam_off = af_data.get("camera_offset")
+                    if af_cam_off is None or af_cam_off != [cam_off_x, cam_off_y]:
+                        recalculate_affine_from_settings(cfg)
+                        with open(affine_file, "r", encoding="utf-8") as f:
+                            af_data = json.load(f)
+
                     M = np.array(af_data["matrix"], dtype=np.float64)
 
                     from src.svg_injector import extract_touch_dots
                     from src.vision_detector import TransformEstimator
-
-                    cfg = load_config()
                     bed_height = cfg.get("bed_height_mm", 220.0)
                     design_fids = cfg.get("design_fiducials", None)
                     dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, design_fiducials=design_fids)
@@ -2696,6 +2766,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             cfg = load_config()
             settle_secs = cfg.get("camera_settle_seconds", 2.0)
             cmd.extend(["--settle-seconds", str(settle_secs)])
+            cmd.extend(["--camera-offset-x", str(cfg.get("camera_offset_x_mm", 0.0))])
+            cmd.extend(["--camera-offset-y", str(cfg.get("camera_offset_y_mm", 0.0))])
             moonraker_url = cfg.get("moonraker_url", "http://localhost:7125")
             crowsnest_url = cfg.get("crowsnest_url", "http://localhost:8080/?action=stream")
 

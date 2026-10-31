@@ -299,6 +299,7 @@ def main():
                 "translation_mm": [tx, ty],
                 "design_points": design_nominal_points.tolist() if hasattr(design_nominal_points, "tolist") else list(design_nominal_points),
                 "measured_bed_points": measured_bed_points.tolist() if hasattr(measured_bed_points, "tolist") else list(measured_bed_points),
+                "camera_offset": [float(args.camera_offset_x), float(args.camera_offset_y)],
                 "timestamp": time.time(),
             }
             with open(affine_path, "w", encoding="utf-8") as f:
