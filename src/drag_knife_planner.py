@@ -239,7 +239,7 @@ class GCodeGenerator:
 
     def __init__(
         self,
-        z_safe: float = 2.54,
+        z_safe: float = 5.0,
         z_cut: float = 0.0,
         f_cut: float = 1016.0,
         f_travel: float = 2540.0,
@@ -251,7 +251,7 @@ class GCodeGenerator:
         """
         Initialize G-code Generator.
 
-        :param z_safe: Safe travel Z height in mm (default: 2.54 mm)
+        :param z_safe: Safe travel Z height in mm (default: 5.0 mm)
         :param z_cut: Cutting Z depth in mm (default: 0.0 mm)
         :param f_cut: Cutting feedrate in mm/min (default: 1016 mm/min)
         :param f_travel: Rapid travel feedrate in mm/min (default: 2540 mm/min)
@@ -260,7 +260,7 @@ class GCodeGenerator:
         :param z_lift_swivel: Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = disabled/in-plane)
         :param pause_before_cut: If True, inserts PAUSE command before cutting starts to wait for user confirmation
         """
-        self.z_safe = z_safe
+        self.z_safe = max(z_safe, 5.0)
         self.z_cut = z_safe if dry_run else z_cut
         self.f_cut = f_cut
         self.f_travel = f_travel
@@ -318,20 +318,27 @@ class GCodeGenerator:
                 ox, oy = paper_origin[0], paper_origin[1]
                 lines.append("; --- Park at Paper Origin (0,0) ---")
                 lines.append(f"G1 X{ox:.4f} Y{oy:.4f} F{self.f_travel:.1f} ; Rapid to Paper Origin (0,0)")
-                lines.append("G1 Z1.0000 F1500.0 ; Hover 1mm above Paper (0,0)")
+                lines.append("G1 Z1.0000 F1500.0 ; Hover 1mm above Paper (0,0) for visual alignment check")
+                lines.append("G4 P2000 ; Dwell 2s for visual alignment check at origin")
+                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; LIFT BLADE TO SAFE HEIGHT (>= 5mm) BEFORE PAUSE TO PREVENT DRAGGING")
+            else:
+                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe travel height (>= 5mm) before pause")
+
             lines.append("")
-            lines.append("M117 Alignment Check: Inspect 3 dots & Resume")
-            lines.append('RESPOND TYPE=echo MSG="Needle visited 3 test dots and is parked at Paper (0,0). Inspect dots and click RESUME to cut."')
-            lines.append("PAUSE ; Pause machine and wait for user to confirm")
-            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Lift blade back to safe height")
+            lines.append("M117 Alignment Check: Inspect dots & Resume")
+            lines.append(f'RESPOND TYPE=echo MSG="Needle visited test dots & origin. Lifted to safe Z ({self.z_safe:.1f}mm). Click RESUME to cut."')
+            lines.append("PAUSE ; Pause machine safely at safe height")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Maintain safe travel height upon resume")
             lines.append("")
 
         if self.pause_before_cut and not touch_points:
             lines.append("")
             lines.append("; --- User Inspection Pause ---")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe height (>= 5mm) before pause")
             lines.append("M117 Check material & click Resume")
             lines.append('RESPOND TYPE=echo MSG="Job Paused! Inspect material & click RESUME to start cut."')
             lines.append("PAUSE ; Pause machine and wait for user to press Resume/OK")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Maintain safe travel height upon resume")
         lines.append("")
 
         contour_count = 0

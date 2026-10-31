@@ -2708,19 +2708,22 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     if not mr.is_connected():
                         resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
                     else:
-                        mr.jog_to(z=z_safe, feedrate=f_travel, wait_finish=True)
+                        safe_z = max(float(z_safe), 5.0)
+                        mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
                         for dx, dy in touch_pts_bed:
-                            mr.jog_to(x=dx, y=dy, z=z_safe, feedrate=f_travel, wait_finish=True)
+                            mr.jog_to(x=dx, y=dy, z=safe_z, feedrate=f_travel, wait_finish=True)
                             mr.jog_to(z=z_cut, feedrate=f_plunge, wait_finish=True)
                             time.sleep(1.5)
-                            mr.jog_to(z=z_safe, feedrate=f_travel, wait_finish=True)
+                            mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
 
-                        mr.jog_to(x=paper_origin_bed[0], y=paper_origin_bed[1], z=z_safe, feedrate=f_travel, wait_finish=True)
+                        mr.jog_to(x=paper_origin_bed[0], y=paper_origin_bed[1], z=safe_z, feedrate=f_travel, wait_finish=True)
                         mr.jog_to(z=1.0, feedrate=1500.0, wait_finish=True)
+                        time.sleep(2.0)
+                        mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
 
                         resp = {
                             "status": "ok",
-                            "message": "Blade touched 3 verification dots and is parked hovering at Paper (0,0).",
+                            "message": f"Blade touched 3 verification dots and origin, then lifted to safe height ({safe_z:.1f}mm).",
                             "dots_bed": touch_pts_bed,
                             "paper_origin_bed": paper_origin_bed
                         }
