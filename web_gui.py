@@ -628,6 +628,40 @@ HTML_PAGE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ender 3 Auto-Cutter Studio</title>
+  <script>
+    // Bulletproof Early Error Trap: Captures ANY unhandled JS crash or promise rejection
+    window.__earlyErrors = [];
+    window.onerror = function(msg, url, line, col, error) {
+      if (String(msg).indexOf('ResizeObserver') !== -1) return false;
+      var errText = '[CRASH] ' + msg + (line ? ' (line ' + line + ')' : '');
+      window.__earlyErrors.push(errText);
+      var box = document.getElementById('log-box');
+      if (box) {
+        var d = document.createElement('div');
+        d.style.color = '#f87171';
+        d.style.fontWeight = 'bold';
+        d.textContent = '[' + new Date().toLocaleTimeString() + '] ❌ ' + errText;
+        box.appendChild(d);
+        box.scrollTop = box.scrollHeight;
+      }
+      return false;
+    };
+    window.addEventListener('unhandledrejection', function(event) {
+      var reason = event.reason;
+      var msg = reason && (reason.message || reason.stack) ? (reason.message || reason) : reason;
+      var errText = '[ASYNC ERROR] ' + msg;
+      window.__earlyErrors.push(errText);
+      var box = document.getElementById('log-box');
+      if (box) {
+        var d = document.createElement('div');
+        d.style.color = '#fbbf24';
+        d.style.fontWeight = 'bold';
+        d.textContent = '[' + new Date().toLocaleTimeString() + '] ⚠️ ' + errText;
+        box.appendChild(d);
+        box.scrollTop = box.scrollHeight;
+      }
+    });
+  </script>
   <!-- Load Tailwind asynchronously so it NEVER blocks page rendering if offline -->
   <script src="https://cdn.tailwindcss.com" defer></script>
   <style>
@@ -1019,7 +1053,13 @@ HTML_PAGE = """<!DOCTYPE html>
       <!-- Col 3: Real-time Pipeline Log -->
       <div class="card p-4 space-y-3 flex flex-col justify-between">
         <div>
-          <h3 class="text-sm font-semibold mb-2">Real-time Pipeline Log</h3>
+          <div class="flex justify-between items-center mb-2">
+            <h3 class="text-sm font-semibold">Real-time Pipeline Log</h3>
+            <div class="flex space-x-2">
+              <button onclick="copyLog()" class="text-[10px] text-slate-400 hover:text-white px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700" title="Copy entire log to clipboard">📋 Copy Log</button>
+              <button onclick="clearLog()" class="text-[10px] text-slate-400 hover:text-white px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700" title="Clear log window">🧹 Clear</button>
+            </div>
+          </div>
           <div id="log-box" class="w-full h-[450px] bg-slate-950 rounded p-3 text-[11px] font-mono text-emerald-400 overflow-y-auto space-y-1 border border-slate-800">
             <div>[INIT] Cutter Studio Web Server ready on port 5000</div>
           </div>
@@ -1224,6 +1264,41 @@ HTML_PAGE = """<!DOCTYPE html>
   <script>
     let currentStepSize = 1.0;
     let manualLockedPoints = [null, null, null];
+
+    function copyLog() {
+      const box = document.getElementById('log-box');
+      if (!box) return;
+      const text = box.innerText || box.textContent;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          addLog('[INFO] Log copied to clipboard! Ready to paste.');
+        }).catch(() => {
+          alert(["Log text (Ctrl+C to copy):", text].join(String.fromCharCode(10) + String.fromCharCode(10)));
+        });
+      } else {
+        alert(["Log text (Ctrl+C to copy):", text].join(String.fromCharCode(10) + String.fromCharCode(10)));
+      }
+    }
+
+    function clearLog() {
+      const box = document.getElementById('log-box');
+      if (box) box.innerHTML = '<div>[LOG CLEARED] Ready.</div>';
+    }
+
+    // Flush any early crashes captured before DOM was ready
+    document.addEventListener('DOMContentLoaded', function() {
+      const box = document.getElementById('log-box');
+      if (box && window.__earlyErrors && window.__earlyErrors.length > 0) {
+        window.__earlyErrors.forEach(err => {
+          const d = document.createElement('div');
+          d.style.color = '#f87171';
+          d.style.fontWeight = 'bold';
+          d.textContent = '[' + new Date().toLocaleTimeString() + '] ❌ ' + err;
+          box.appendChild(d);
+        });
+        box.scrollTop = box.scrollHeight;
+      }
+    });
 
     function addLog(msg) {
       const box = document.getElementById('log-box');
