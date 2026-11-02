@@ -2022,7 +2022,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .then(data => {
           addLog(`[RESUME] ${data.message}`);
           if (data.status !== 'ok') {
-            alert("Resume failed: " + data.message + "\n\nTip: In Mainsail console, type RESUME_BASE or set min_extrude_temp: 0 in printer.cfg.");
+            alert(["Resume failed: " + data.message, "Tip: In Mainsail console, type RESUME_BASE or set min_extrude_temp: 0 in printer.cfg."].join(String.fromCharCode(10) + String.fromCharCode(10)));
           }
         })
         .catch(err => addLog(`[ERROR] Resume request failed: ${err.message}`))
