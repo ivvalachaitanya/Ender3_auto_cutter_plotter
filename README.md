@@ -1,253 +1,138 @@
-# Ender 3 Autonomous Computer-Vision "Print & Cut" Vinyl Cutting Pipeline
+# Ender 3 Print & Cut: Computer-Vision Vinyl Cutter
 
-An autonomous computer-vision alignment and drag-knife vinyl cutting system for Creality Ender 3 (and standard Cartesian 3D printers) running Klipper firmware, Moonraker, and Crowsnest. Features a **Cricut-style Web GUI Studio (`web_gui.py`)**, **Sub-Pixel Vision Fiducial Alignment**, **Dual Auto ArUco & Manual Crosshair Jog Modes**, **PolyCut / JScut G-code Affine Transformation**, and **Roland Drag Knife Corner Swivel Planning**.
+Turns a Creality Ender 3 running **Klipper + Moonraker + Crowsnest** into a print-and-cut vinyl
+cutter. Print your design with three ArUco registration marks, lay the sheet on the bed, and a
+toolhead camera finds the marks, works out exactly where and how skewed the sheet is, and a drag
+knife cuts along the printed outlines.
 
----
+Everything runs from a browser-based **Cutter Studio** (`web_gui.py`) or the command line
+(`vision_cutter.py`).
 
-## 🌟 Key Features
+## Features
 
-- **🎨 Web Studio GUI (`web_gui.py`):** Interactive web application running on local port `5000` with Tailwind CSS, true 1:1 physical bed mat rendering, live 30 FPS MJPEG webcam stream, workspace file manager, and file upload modal.
-- **⚡ Dual Alignment Modes:**
-  - **⚡ Automatic (ArUco Fiducials):** Sub-pixel detection of OpenCV ArUco markers (`DICT_4X4_50`) with automated gantry positioning.
-  - **🎮 Manual (Camera Crosshair Jog):** Interactive D-pad jog controls with live camera optical target reticle to manually lock 3 registration marks and solve the 2D Affine transformation.
-- **📄 SVG & G-code Support:** Seamlessly load SVG artwork vector cut paths or pre-generated G-code toolpaths (from PolyCut, JScut, Inkscape).
-- **📐 2D Rigid Affine Transformation ($S, \theta, T_x, T_y$):** Computes 2D partial rigid affine matrices (`cv2.estimateAffinePartial2D`) to compensate for sheet rotation, translation, and scale skew on the bed.
-- **🔪 Roland Drag Knife Geometry Compensation:** Implements corner swivel arc compensation (`G2`/`G3`) for drag-knife blade caster offset, preventing vinyl tearing or rounded corners.
-- **⚙️ Persistent Configuration (`config.json`):** Web GUI calibration modal to configure printable bed size, blade offset, camera offsets ($X, Y$), Z travel heights, and feedrates.
-- **🔧 3D Printable Mechanical Hardware:** Custom Logitech C270 webcam mount integrated directly into the Ender 3 toolhead drag knife bracket ($X_{\text{offset}} = -25.0\text{ mm}$).
+- **Fast, reliable mark finding:** search steps sized to the camera's view, partially visible
+  marks followed, sheet rotation read from the first mark, reach-aware placement help.
+  Auto scan locks all three marks in about 25–35 s. → [details](docs/registration-mark-search.md)
+- **Accurate alignment:** rotation + scale + offset solved from the marks; on the test machine the
+  aligned positions are within 0.1 mm (Camera Accuracy Check).
+- **Drag-knife cut paths:** exact corners, inside-first cut order, swivel compensation at corners
+  and at every plunge, overcut, multi-pass. Techniques follow
+  [PolyCut](https://github.com/IridiumIO/PolyCut). → [details](docs/cut-path-pipeline.md)
+- **Built-in checks:** Camera Accuracy Check (no blade contact), Touch-Off Test, Frame Bounds,
+  dry run. → [workflow](docs/workflow.md)
+- **Bed-levelling tools:** corner measurement script and a dedicated cutting mesh profile.
+  → [details](docs/bed-levelling.md)
+- **SVG or existing G-code:** generate from SVG, or re-align PolyCut/JScut/Inkscape toolpaths to the
+  printed sheet.
+- **Safe by design:** alignments only reused for the same file within an hour, travel height always
+  above the cut plane, swivels as plain `G1` moves (no `[gcode_arcs]` needed).
+  → [details](docs/alignment-and-safety.md)
 
----
+## Documentation
 
-## 🏗️ Repository Architecture
+| | |
+|---|---|
+| [Workflow](docs/workflow.md) | Using Cutter Studio from file to finished cut |
+| [Configuration](docs/configuration.md) | `config.json` keys, CLI flags, Klipper `printer.cfg` |
+| [Calibration](docs/calibration.md) | Camera offset, mm/px, camera twist, blade offset, cut depth |
+| [Bed levelling](docs/bed-levelling.md) | Levelling with the BLTouch and the `cutter` mesh |
+| [Registration-mark search](docs/registration-mark-search.md) | How the marks are found |
+| [Cut-path pipeline](docs/cut-path-pipeline.md) | How SVG becomes drag-knife G-code |
+| [Alignment & safety rules](docs/alignment-and-safety.md) | Alignment reuse, Z rules, transformer |
+| [Testing](docs/testing.md) | Simulators, live results, hardware test checklist |
+| [Changelog](docs/changelog.md) | What changed on the current branch |
+
+## Hardware
+
+- Creality Ender 3 (tested: Melzi ATmega1284P board) with Klipper, Moonraker, Mainsail, Crowsnest
+- BLTouch (tested 43 mm left of the knife) for homing and the bed mesh
+- Spring-loaded drag-knife holder with a Roland-style 45° blade, in place of the hotend
+- Logitech C270 webcam on the toolhead (tested 29.6 mm right of the blade), refocused for close range
+- Printable parts in `mechanical/`: knife bracket (`SupportoDragKnife*.stl`, with or without the
+  C270 mount), C270 focus wheel, and an assembly (`Ender3VinylCutter.3mf`)
+
+## Installation
+
+```bash
+git clone https://github.com/ivvalachaitanya/Ender3_auto_cutter_plotter.git
+cd Ender3_auto_cutter_plotter
+pip install -r requirements.txt     # Python 3.8+: opencv-python, numpy<2, requests, svgelements, svgpathtools, shapely
+```
+
+Then set your printer's address and calibration in `config.json` (or in the GUI's Settings) and
+work through [Calibration](docs/calibration.md) once.
+
+## Quick start
+
+**Web GUI**
+
+```bash
+python web_gui.py --port 5000       # or start_web_gui.bat
+```
+
+Open `http://localhost:5000`, then:
+
+1. **Select Cut File**: choose or upload an SVG.
+2. **Print / Prep Sheet**: add the ArUco marks and test dots, then print at 1:1 scale.
+3. **Scan & Align**: lay the sheet on the bed and run the scan (Assisted mode: slide the sheet
+   under the camera).
+4. **Cut Vinyl**: Camera Accuracy Check → Touch-Off Test → dry run → **START VINYL CUT**.
+
+Full walkthrough: [docs/workflow.md](docs/workflow.md).
+
+**Command line**
+
+```bash
+# scan the marks only
+python vision_cutter.py --svg samples/Cut_default.svg --no-upload --search-mode auto
+
+# dry run from the saved alignment, upload and start
+python vision_cutter.py --svg samples/Cut_default.svg --use-cached-alignment --dry-run --auto-start
+
+# offline test, no printer needed
+python vision_cutter.py --svg samples/Cut_default.svg --mock --no-upload
+```
+
+All flags: [docs/configuration.md](docs/configuration.md#vision_cutterpy-command-line).
+
+**Bed levelling** (blade out, sheet off)
+
+```bash
+python scripts/measure_bed_corners.py
+```
+
+## Repository layout
 
 ```
 Ender3_auto_cutter_plotter/
-├── config.json                     # Persistent hardware calibration settings
-├── requirements.txt                # Python package dependencies
-├── README.md                       # Documentation & setup guide
-├── vision_cutter.py                # Main CLI Print & Cut pipeline execution tool
-├── web_gui.py                      # Cricut-style Web Application Server (Port 5000)
-│
-├── src/                            # Core Pipeline Python Modules
-│   ├── __init__.py                 # Package initializer
-│   ├── drag_knife_planner.py       # SVG parsing, swivel corner planning, Klipper G-code generator
-│   ├── gcode_transformer.py        # 2D Affine transformation matrix solver for G-code toolpaths
-│   ├── moonraker_client.py         # Klipper / Moonraker API & camera snapshot client
-│   └── vision_detector.py          # ArUco fiducial detector & 2D Affine pose estimator
-│
-├── mechanical/                     # 3D Printable CAD Models & Assemblies
-│   ├── Ender3VinylCutter.3mf       # 3MF Bambu / Prusa slicer assembly file
-│   ├── ender3vinylcutter.stl       # Assembly STL model
-│   ├── SupportoDragKnife.SLDPRT    # SolidWorks original toolhead part
-│   ├── SupportoDragKnife.STL       # Standard Ender 3 drag knife bracket
-│   ├── SupportoDragKnife_with_C270_CameraMount.stl # Drag knife bracket + C270 camera mount
-│   ├── LogiC270_wheel.stl          # Focus wheel modification for C270
-│   ├── Logitech C270 Focus inner.stl
-│   └── Logitech C270 Focus outer.stl
-│
-├── scripts/                        # Utility Scripts & Generators
-│   ├── fix_svg.py                  # SVG element sanitizer utility
-│   ├── generate_aruco_markers.py   # ArUco fiducial marker PNG generator
-│   ├── generate_custom_c270_mount.py # Manifold3D parametric CAD mount generator
-│   └── test_pc_camera.py           # OpenCV camera enumeration & focus test utility
-│
-├── samples/                        # Sample SVG Artwork & Toolpath Files
-│   ├── Cut.svg                     # Sample sticker sheet with ArUco markers & cut contours
-│   ├── Cut1.svg
-│   ├── Cut_size.svg
-│   ├── cut.gcode                   # Sample PolyCut toolpath file
-│   ├── sample_test.svg
-│   └── settings.jscut              # JSCut toolpath project settings
-│
-└── assets/                         # Visual Assets & Calibration Images
-    ├── markers/                    # High-resolution ArUco marker PNG files
-    ├── images/                     # Mechanical assembly documentation diagrams
-    └── snapshots/                  # Camera snapshot test logs & coordinate JSON files
+├── web_gui.py                  Cutter Studio web server (port 5000)
+├── vision_cutter.py            Command-line pipeline: scan → align → plan → G-code → upload
+├── config.json                 Machine calibration and cutting settings
+├── requirements.txt
+├── start_web_gui.bat, start_cutter_studio.bat
+├── src/
+│   ├── drag_knife_planner.py   SVG parsing, cut ordering, drag-knife planning, G-code generator
+│   ├── vision_detector.py      ArUco/target detection, mark search, affine solver
+│   ├── gcode_transformer.py    Re-aligns existing G-code toolpaths
+│   ├── svg_injector.py         Adds ArUco marks and touch-off test dots to an SVG
+│   └── moonraker_client.py     Moonraker API and camera client
+├── scripts/
+│   ├── measure_bed_corners.py  Bed levelling helper (BLTouch)
+│   ├── generate_aruco_markers.py, fix_svg.py, test_pc_camera.py
+│   └── generate_custom_c270_mount.py
+├── docs/                       Detailed documentation
+├── samples/                    Example designs, PolyCut G-code, Ender 3 PolyCut profile
+├── mechanical/                 Printable knife bracket and camera mount
+└── assets/                     Marker images, part renders, camera snapshots
 ```
 
----
+## PolyCut / JScut
 
-## 🚀 Installation & Setup
+To cut existing toolpaths instead of generating them, pass the `.gcode` file as `--svg` (or pick
+it in the GUI). The scan aligns it to the printed sheet the same way. A PolyCut profile for the
+Ender 3 is in [`samples/ender3_gen1_polycut_profile.json`](samples/ender3_gen1_polycut_profile.json).
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/ivvalachaitanya/Ender3_auto_cutter_plotter.git
-   cd Ender3_auto_cutter_plotter
-   ```
+## License
 
-2. **Install Python Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Verify Dependencies:**
-   - `python >= 3.8`
-   - `opencv-python`
-   - `numpy`
-   - `requests`
-   - `svgelements`
-   - `trimesh` & `manifold3d` (optional, for CAD generation)
-
----
-
-## 🌐 Running the Cutter Studio Web Application
-
-Start the local web GUI server:
-```bash
-python web_gui.py --port 5000
-```
-Open **`http://localhost:5000`** in your web browser.
-
-### Web GUI Workflow:
-1. **Step 1: Select or Upload Cut File:** Choose an existing `.svg` or `.gcode` file from the workspace dropdown, or click **`📤 Choose File`** to upload your design.
-2. **Step 2: Print Sheet (SVG Mode):** Click **`🖨️ Print Sheet (1:1)`** to send your SVG artwork with ArUco fiducials to your 2D paper/vinyl color printer at 1:1 scale. (Skipped automatically if PolyCut G-code is selected).
-3. **Step 3: Scan & Align:**
-   - **⚡ Auto Mode:** Click **`📷 Auto-Scan ArUco Fiducials`** for automatic vision detection.
-   - **🎮 Manual Mode:** Use the interactive D-Pad to jog the camera crosshairs over registration marks #0, #1, #2, click **`📌 Lock Mark`**, and solve the 2D Affine Matrix.
-4. **Step 4: Cut Vinyl & Bounding Box Framing:** Click **`🔲 Trace Bounding Box (Frame)`** to trace the 4 outer corners at Safe Z ($Z=5.0\text{ mm}$) to verify material placement, set your **Dry Run** preference, and click **`🚀 START VINYL CUT`** to execute the job on Klipper!
-
----
-
-## 💻 CLI Usage
-
-You can also run the pipeline headlessly via command line:
-
-### 1. Dry Run (Alignment Check Without Cutting)
-```bash
-python vision_cutter.py \
-  --svg samples/Cut.svg \
-  --moonraker-url http://192.168.1.50:7125 \
-  --crowsnest-url http://192.168.1.50:8080/?action=snapshot \
-  --blade-offset 0.35 \
-  --camera-offset-x -25.0 \
-  --camera-offset-y 0.0 \
-  --mm-per-pixel 0.05 \
-  --dry-run
-```
-
-### 2. PolyCut G-code Fiducial Compensation
-```bash
-python vision_cutter.py \
-  --svg samples/cut.gcode \
-  --moonraker-url http://192.168.1.50:7125 \
-  --auto-start
-```
-
-### 3. Offline Mock Mode (Testing Without Hardware)
-```bash
-python vision_cutter.py --svg samples/Cut.svg --mock
-```
-
----
-
-## 📐 Hardware Calibration Guide
-
-```
-                  +--------------------------+
-                  |    Gantry Toolhead       |
-                  |                          |
-                  |   [Camera]    [Knife]    |
-                  +------|-----------|-------+
-                         |<--Offset->|
-                         |   X, Y    |
-                         v           v
-                    (Camera Axis) (Blade Tip)
-```
-
-1. **Camera Scale (`--mm-per-pixel`):**
-   Place a ruler on the bed under the camera. Measure pixel distance between 10 mm marks.  
-   $$\text{mm\_per\_pixel} = \frac{10\text{ mm}}{\text{distance in pixels}}$$
-
-2. **Camera Offsets (`--camera-offset-x`, `--camera-offset-y`):**
-   Make a small pinprick cut with the drag knife at $(100.0, 100.0)$. Jog gantry until the camera target reticle centers over the mark. Read gantry position $(X_{\text{cam}}, Y_{\text{cam}})$:
-   $$X_{\text{offset}} = X_{\text{cam}} - 100.0$$
-   $$Y_{\text{offset}} = Y_{\text{cam}} - 100.0$$
-
-3. **Drag Knife Blade Offset (`--blade-offset`):**
-   Roland 45° blades feature a $0.35\text{ mm}$ offset between pivot axis and cutting tip.  
-   - **Rounded Corners:** Increase blade offset ($+0.05\text{ mm}$).
-   - **Looping Corners:** Decrease blade offset ($-0.05\text{ mm}$).
-
----
-
-## 🔪 Cut Path Pipeline (SVG input)
-
-`src/drag_knife_planner.py` turns SVG shapes into drag-knife G-code in these steps. Several
-techniques follow [PolyCut](https://github.com/IridiumIO/PolyCut); this is an independent
-implementation.
-
-1. **Flattening:** each SVG segment is flattened separately. Straight edges keep their exact
-   corners and curves are subdivided to 0.01 mm. Every subpath (e.g. the hole in an "O") is
-   its own contour, and all shape types (`rect`, `circle`, `polygon`, …) are cut.
-2. **Noise filter** (`path_noise_tolerance_mm`, default off): removes collinear points and tiny
-   zig-zags that make the blade swivel needlessly. Use ~0.05 mm for traced bitmaps only.
-3. **Cut order** (`optimize_cut_order`): inside-first, so holes and inner details are cut before
-   the outline that frees the piece. Within that rule it picks the nearest path, and prefers
-   starting in the direction the blade is already pointing. Closed shapes may be cut in
-   either direction, and open paths may be reversed.
-4. **Start points:** closed shapes start on a smooth point or mid-edge, never on a corner.
-5. **Blade alignment at the plunge:** the blade keeps its heading while lifted. The tip
-   therefore lands exactly on the start point and swivels in place to the new direction,
-   like a corner. The first cut of a job has an unknown heading, so it plunges
-   `blade offset + lead_in_margin_mm` behind its start and drags into line instead.
-6. **Corners:** a swivel arc about the corner for turns over 30°. By default it is written as
-   short `G1` segments (within 0.005 mm), which works on any printer. Set `use_gcode_arcs: true`
-   (or `--gcode-arcs`) to write `G2`/`G3` instead; that needs `[gcode_arcs]` in `printer.cfg`, and
-   the pipeline falls back to segments if the printer does not have it.
-7. **Overcut** (`overcut_mm`): closed shapes re-cut their own start for this distance,
-   following the shape through corners.
-8. **Passes** (`passes`, `pass_depth_step_mm`): each contour is cut `passes` times, each pass
-   `pass_depth_step_mm` deeper, before moving to the next contour.
-
-All of these are in the Web GUI Settings modal and as CLI flags (`--overcut`, `--lead-in`,
-`--noise-tolerance`, `--no-optimize-order`, `--passes`, `--pass-step`).
-
----
-
-## ⚙️ PolyCut / JScut Profile for Creality Ender 3 Gen 1
-
-Because PolyCut lacks a built-in pre-set profile for Creality Ender 3 Gen 1, use the pre-configured profile included in [`samples/ender3_gen1_polycut_profile.json`](file:///C:/Users/chait/.gemini/antigravity/scratch/Ender3_auto_cutter_plotter/samples/ender3_gen1_polycut_profile.json) or enter these settings into PolyCut:
-
-- **Bed Dimensions:** $220\text{ mm} \times 220\text{ mm}$ (Rectangular, Lower-Left Origin)
-- **Blade Offset:** $0.35\text{ mm}$ (Roland 45° Standard Blade)
-- **Safe Z Travel:** $5.0\text{ mm}$
-- **Plunge Cut Z:** $0.0\text{ mm}$
-- **Cut Feedrate:** $1200\text{ mm/min}$ ($20\text{ mm/s}$)
-- **Travel Feedrate:** $3000\text{ mm/min}$ ($50\text{ mm/s}$)
-- **Start G-code Header:**
-  ```gcode
-  G90 ; Absolute positioning
-  G28 X Y ; Home X and Y axes
-  G0 Z5.0 F3000 ; Lift blade to Safe Z height
-  ```
-- **End G-code Footer:**
-  ```gcode
-  G90 ; Absolute positioning
-  G0 Z10.0 F3000 ; Lift blade to safe height
-  G0 X0 Y220 F3000 ; Present finished sheet to front
-  ```
-
----
-
-## ⚙️ Recommended Klipper `printer.cfg` Settings
-
-Ensure `printer.cfg` includes arc support for smooth drag-knife swivel moves:
-
-```ini
-[stepper_x]
-position_min: -30
-position_max: 235
-
-[stepper_y]
-position_min: -10
-position_max: 235
-
-[gcode_arcs]
-resolution: 0.1
-```
-
----
-
-## 📜 License
-
-MIT License - Open Source for Ender 3 & Klipper vinyl cutting enthusiasts.
+MIT. Several cut-path techniques follow [PolyCut](https://github.com/IridiumIO/PolyCut) (GPL-3);
+they are independently reimplemented here and no PolyCut code is included.
