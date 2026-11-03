@@ -163,6 +163,48 @@ class FiducialDetector:
                 best, best_area = (cx, cy), area
         return best
 
+    def find_touch_target(self, frame: np.ndarray, mm_per_pixel: float) -> Optional[Tuple[float, float]]:
+        """
+        Find the centre (px, sub-pixel) of a printed touch-dot target: a 0.75 mm ring around a filled
+        0.3 mm dot (as inject_verification_dots draws them). Picks the target nearest the image centre.
+        Returns None when no target is in view.
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+        h, w = gray.shape[:2]
+        blur = cv2.GaussianBlur(gray, (5, 5), 1.2)
+        r_ring = 0.75 / mm_per_pixel
+        circles = cv2.HoughCircles(blur, cv2.HOUGH_GRADIENT, dp=1, minDist=r_ring * 2, param1=80, param2=18,
+                                   minRadius=int(r_ring * 0.7), maxRadius=int(r_ring * 1.35))
+        if circles is None:
+            return None
+        background = float(np.median(gray))
+        best = None
+        for x, y, _r in circles[0]:
+            xi, yi = int(round(x)), int(round(y))
+            if not (3 <= xi < w - 3 and 3 <= yi < h - 3):
+                continue
+            if float(gray[yi - 2:yi + 3, xi - 2:xi + 3].mean()) > background - 25:
+                continue  # no filled centre dot: some other circle, not a touch target
+            d = math.hypot(x - w / 2.0, y - h / 2.0)
+            if best is None or d < best[0]:
+                best = (d, float(x), float(y))
+        if best is None:
+            return None
+        _, x, y = best
+        # Refine with the intensity-weighted centroid of the filled centre dot.
+        rr = int(max(4, 0.5 / mm_per_pixel))
+        x0, y0 = max(0, int(round(x)) - rr), max(0, int(round(y)) - rr)
+        patch = gray[y0:y0 + 2 * rr + 1, x0:x0 + 2 * rr + 1].astype(np.float64)
+        if patch.size:
+            thr = (patch.min() + background) / 2.0
+            wgt = np.clip(thr - patch, 0, None)
+            yy, xx = np.mgrid[0:patch.shape[0], 0:patch.shape[1]]
+            wgt[np.hypot(xx + x0 - x, yy + y0 - y) > 0.45 / mm_per_pixel] = 0  # the dot only, not the ring
+            if wgt.sum() > 0:
+                x = float((wgt * (xx + x0)).sum() / wgt.sum())
+                y = float((wgt * (yy + y0)).sum() / wgt.sum())
+        return x, y
+
     def detect_all_circle_fiducials(self, frame: np.ndarray, min_area: float = 15.0, max_area: float = 50000.0, min_circularity: float = 0.55) -> List[Tuple[float, float]]:
         """
         Detect ALL sub-pixel circular fiducial centroids in frame.

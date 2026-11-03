@@ -159,6 +159,27 @@ def design_fiducials_for(filepath, cfg):
     return np.array(cfg.get("design_fiducials", [[15.0, 195.0], [185.0, 195.0], [15.0, 15.0]]), dtype=np.float64)
 
 
+def touch_points_bed(filepath, M, cfg):
+    """Bed positions of the 3 touch dots and the paper origin for a file, via alignment M."""
+    from src.svg_injector import extract_touch_dots
+    from src.vision_detector import TransformEstimator
+    dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=cfg.get("bed_height_mm", 235.0),
+                                              design_fiducials=design_fiducials_for(filepath, cfg))
+    dots = TransformEstimator.transform_points(np.array(dots_nom, dtype=np.float64), M)
+    origin = TransformEstimator.transform_points(np.array([origin_nom], dtype=np.float64), M)[0]
+    return [(float(p[0]), float(p[1])) for p in dots], (float(origin[0]), float(origin[1]))
+
+
+def accuracy_verdict(max_err):
+    if max_err <= 0.15:
+        return "excellent", "Excellent: the alignment is accurate to within 0.15 mm."
+    if max_err <= 0.30:
+        return "good", "Good: alignment within 0.3 mm, fine for vinyl and paper."
+    if max_err <= 0.60:
+        return "fair", "Fair: up to 0.6 mm off. Consider re-scanning (Step 3) or checking mm_per_pixel."
+    return "poor", "Poor: over 0.6 mm off. Re-scan (Step 3) before cutting; if it persists, check camera calibration."
+
+
 def get_file_bounding_box(filepath):
     """Calculate min_x, max_x, min_y, max_y bounding box for SVG or G-code file."""
     min_x, min_y = float('inf'), float('inf')
@@ -976,6 +997,9 @@ HTML_PAGE = """<!DOCTYPE html>
           <button id="verify-dots-btn" onclick="runTouchVerification()" class="w-full bg-purple-800 hover:bg-purple-700 text-white font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1 mt-1 border border-purple-500/40">
             <span>📍 Touch-Off Test (3 Dots & Park)</span>
           </button>
+          <button id="accuracy-check-btn" onclick="runCameraAccuracyCheck()" class="w-full bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold py-1.5 rounded text-xs shadow flex items-center justify-center space-x-1 mt-1 border border-cyan-500/40" title="Camera looks at the 3 touch dots and measures how far each is from where the alignment expects it. No blade contact.">
+            <span>🔬 Camera Accuracy Check (no blade contact)</span>
+          </button>
           <label class="flex items-center space-x-1.5 text-[11px] text-slate-400 cursor-pointer pt-0.5">
             <input type="checkbox" id="force-home-check" class="rounded bg-slate-800 border-slate-700 text-purple-600 focus:ring-0">
             <span>Force G28 homing (uncheck to skip if already homed)</span>
@@ -1110,6 +1134,28 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <!-- Alignment Touch Verification Modal -->
+  <div id="accuracy-modal" style="display: none;" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onclick="if (event.target === this) closeAccuracyModal()">
+    <div class="card max-w-5xl w-full p-5 space-y-3 border border-cyan-500/50 shadow-2xl max-h-[95vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-3 text-cyan-300">
+          <span class="text-2xl">🔬</span>
+          <div>
+            <h3 class="text-base font-bold text-white">Camera Accuracy Check</h3>
+            <p class="text-xs text-slate-400">Green cross = where the alignment expects each dot. Red circle = where the camera found it.</p>
+          </div>
+        </div>
+        <button onclick="closeAccuracyModal()" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+      <div id="accuracy-verdict" class="rounded-lg p-3 text-sm font-semibold border"></div>
+      <div id="accuracy-images" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+      <table class="w-full text-xs font-mono text-slate-300">
+        <thead><tr class="text-slate-500 text-left"><th class="py-1">Dot</th><th>Expected bed X, Y (mm)</th><th>Error X</th><th>Error Y</th><th>Error</th></tr></thead>
+        <tbody id="accuracy-table"></tbody>
+      </table>
+      <p class="text-[11px] text-slate-500">This checks the scan/alignment with the camera only. The blade-to-camera offset is checked by the Touch-Off Test (the needle should land on the dots).</p>
+    </div>
+  </div>
+
   <div id="touch-verify-modal" style="display: none;" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
     <div class="card max-w-md w-full p-6 space-y-4 border border-purple-500/50 shadow-2xl">
       <div class="flex items-center space-x-3 text-purple-400">
@@ -2090,6 +2136,77 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
 
+    function closeAccuracyModal() {
+      const m = document.getElementById('accuracy-modal');
+      if (m) m.style.display = 'none';
+    }
+
+    function runCameraAccuracyCheck() {
+      const select = document.getElementById('svg-file');
+      if (!select || !select.value) {
+        alert("Please select a file in Step 1 first.");
+        return;
+      }
+      const file = select.value;
+      const btn = document.getElementById('accuracy-check-btn');
+      if (btn) { btn.disabled = true; btn.innerHTML = "<span>⏳ Camera visiting the 3 dots...</span>"; }
+      addLog(`[ACCURACY] Camera checking the 3 touch dots of '${file}' (no blade contact)...`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      fetch(`/api/camera_accuracy_check?file=${encodeURIComponent(file)}`, { method: 'POST', signal: controller.signal })
+        .then(r => r.json())
+        .then(data => {
+          addLog(data.message);
+          if (!data.dots) {
+            alert('Accuracy check failed: ' + data.message);
+            return;
+          }
+          const colours = { excellent: 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300',
+                            good: 'bg-emerald-950/40 border-emerald-600/40 text-emerald-200',
+                            fair: 'bg-amber-950/50 border-amber-500/50 text-amber-300',
+                            poor: 'bg-rose-950/50 border-rose-500/50 text-rose-300' };
+          const v = document.getElementById('accuracy-verdict');
+          v.className = 'rounded-lg p-3 text-sm font-semibold border ' + (colours[data.level] || 'bg-rose-950/50 border-rose-500/50 text-rose-300');
+          v.textContent = data.status === 'ok'
+            ? `Max error ${data.max_error_mm.toFixed(2)} mm · RMS ${data.rms_error_mm.toFixed(2)} mm — ${data.verdict}`
+            : data.message;
+          const imgs = document.getElementById('accuracy-images');
+          const table = document.getElementById('accuracy-table');
+          imgs.innerHTML = '';
+          table.innerHTML = '';
+          data.dots.forEach(d => {
+            const fig = document.createElement('figure');
+            fig.className = 'bg-slate-950 rounded border border-slate-800 overflow-hidden';
+            if (d.image) {
+              const im = document.createElement('img');
+              im.src = d.image;
+              im.alt = `Camera view of dot ${d.index}`;
+              im.className = 'w-full block';
+              fig.appendChild(im);
+            }
+            const cap = document.createElement('figcaption');
+            cap.className = 'text-[11px] text-slate-300 px-2 py-1 font-mono';
+            cap.textContent = d.found ? `Dot ${d.index}: ${d.error_mm.toFixed(2)} mm off` : `Dot ${d.index}: ${d.note || 'not found'}`;
+            fig.appendChild(cap);
+            imgs.appendChild(fig);
+            const tr = document.createElement('tr');
+            tr.className = 'border-t border-slate-800';
+            const cells = [d.index, `${d.bed[0].toFixed(2)}, ${d.bed[1].toFixed(2)}`,
+                           d.found ? (d.error_x_mm >= 0 ? '+' : '') + d.error_x_mm.toFixed(3) : '—',
+                           d.found ? (d.error_y_mm >= 0 ? '+' : '') + d.error_y_mm.toFixed(3) : '—',
+                           d.found ? d.error_mm.toFixed(3) + ' mm' : (d.note || 'not found')];
+            cells.forEach(c => { const td = document.createElement('td'); td.className = 'py-1'; td.textContent = c; tr.appendChild(td); });
+            table.appendChild(tr);
+          });
+          document.getElementById('accuracy-modal').style.display = 'flex';
+        })
+        .catch(err => addLog(`[ERROR] Accuracy check request failed: ${err.message}`))
+        .finally(() => {
+          clearTimeout(timeoutId);
+          if (btn) { btn.disabled = false; btn.innerHTML = "<span>🔬 Camera Accuracy Check (no blade contact)</span>"; }
+        });
+    }
+
     function openTouchVerifyModal() {
       const m = document.getElementById('touch-verify-modal');
       if (m) m.style.display = 'flex';
@@ -2916,6 +3033,103 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(resp).encode("utf-8"))
 
+        elif parsed.path == "/api/camera_accuracy_check":
+            # Visual accuracy check: the camera (no blade contact) looks at each touch dot from where the
+            # alignment says it is and measures how far the printed target is from the image centre.
+            filename = query.get("file", ["Cut.svg"])[0]
+            filepath = resolve_workspace_file(filename)
+            M, _af, align_err = load_alignment_for(filename)
+            if M is None:
+                resp = {"status": "error", "message": align_err}
+            elif camera_streamer.detector is None:
+                resp = {"status": "error", "message": "OpenCV / detector not available on this computer."}
+            else:
+                try:
+                    import base64
+                    cfg = load_config()
+                    dots_bed, _origin = touch_points_bed(filepath, M, cfg)
+                    off = np.array([float(cfg.get("camera_offset_x_mm", 0.0)), float(cfg.get("camera_offset_y_mm", 0.0))])
+                    mpp = float(cfg.get("mm_per_pixel", 0.03))
+                    rot = math.radians(float(cfg.get("camera_rotation_deg", 0.0)))
+                    z_scan = float(cfg.get("z_scan_mm", 20.0))
+                    settle = float(cfg.get("camera_settle_seconds", 2.0))
+                    f_travel = float(cfg.get("f_travel_mm_min", 3000.0))
+                    bed_w = float(cfg.get("bed_width_mm", 235.0))
+                    bed_h = float(cfg.get("bed_height_mm", 235.0))
+                    mr = get_moonraker_client()
+                    if not mr.is_connected():
+                        raise RuntimeError(f"Cannot connect to Moonraker at {mr.base_url}.")
+                    mr.jog_to(z=z_scan, feedrate=600.0, wait_finish=True)
+                    results = []
+                    for i, (dx, dy) in enumerate(dots_bed, 1):
+                        g = np.array([dx, dy]) - off
+                        item = {"index": i, "bed": [dx, dy], "found": False}
+                        if g[0] < -0.5 or g[1] < -0.5 or g[0] > bed_w + 0.5 or g[1] > bed_h + 0.5:
+                            item["note"] = "outside camera reach"
+                            results.append(item)
+                            continue
+                        mr.jog_to(x=float(g[0]), y=float(g[1]), z=z_scan, feedrate=f_travel, wait_finish=True)
+                        time.sleep(settle)
+                        frame = camera_streamer.fetch_crowsnest_frame()
+                        if frame is None:
+                            frame = camera_streamer.fetch_crowsnest_frame()
+                        if frame is None:
+                            item["note"] = "no camera frame"
+                            results.append(item)
+                            continue
+                        h, w = frame.shape[:2]
+                        c = camera_streamer.detector.find_touch_target(frame, mpp)
+                        ann = frame.copy()
+                        cx, cy = w // 2, h // 2
+                        cv2.line(ann, (cx - 60, cy), (cx + 60, cy), (60, 220, 60), 1, cv2.LINE_AA)
+                        cv2.line(ann, (cx, cy - 60), (cx, cy + 60), (60, 220, 60), 1, cv2.LINE_AA)
+                        cv2.putText(ann, "expected", (cx + 64, cy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 200, 60), 1, cv2.LINE_AA)
+                        if c is not None:
+                            du, dv = c[0] - w / 2.0, c[1] - h / 2.0
+                            ix, iy = -du * mpp, dv * mpp
+                            ex, ey = math.cos(rot) * ix - math.sin(rot) * iy, math.sin(rot) * ix + math.cos(rot) * iy
+                            err = math.hypot(ex, ey)
+                            item.update({"found": True, "error_mm": err, "error_x_mm": ex, "error_y_mm": ey})
+                            p = (int(round(c[0])), int(round(c[1])))
+                            cv2.circle(ann, p, 14, (40, 40, 230), 2, cv2.LINE_AA)
+                            cv2.line(ann, (p[0] - 22, p[1]), (p[0] + 22, p[1]), (40, 40, 230), 1, cv2.LINE_AA)
+                            cv2.line(ann, (p[0], p[1] - 22), (p[0], p[1] + 22), (40, 40, 230), 1, cv2.LINE_AA)
+                            if err > 0.02:
+                                cv2.arrowedLine(ann, (cx, cy), p, (0, 200, 255), 1, cv2.LINE_AA, tipLength=0.25)
+                            label = f"Dot {i}: {err:.2f} mm  (X {ex:+.2f}, Y {ey:+.2f})"
+                        else:
+                            item["note"] = "target not found in view"
+                            label = f"Dot {i}: target NOT found"
+                        bar = int(round(1.0 / mpp))
+                        cv2.line(ann, (12, h - 14), (12 + bar, h - 14), (255, 255, 255), 3)
+                        cv2.putText(ann, "1 mm", (16 + bar, h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+                        cv2.rectangle(ann, (0, 0), (w, 30), (20, 20, 20), -1)
+                        cv2.putText(ann, label, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                        ok_enc, jpg = cv2.imencode(".jpg", ann, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                        if ok_enc:
+                            item["image"] = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode("ascii")
+                        results.append(item)
+                    errs = [r["error_mm"] for r in results if r.get("found")]
+                    if errs:
+                        max_err = max(errs)
+                        rms = math.sqrt(sum(e * e for e in errs) / len(errs))
+                        level, verdict = accuracy_verdict(max_err)
+                        if len(errs) < len(results):
+                            level, verdict = "fair", verdict + f" Only {len(errs)} of {len(results)} dots could be measured."
+                        msg = f"[ACCURACY] Max error {max_err:.2f} mm, RMS {rms:.2f} mm over {len(errs)} dots. {verdict}"
+                        resp = {"status": "ok", "message": msg, "dots": results, "max_error_mm": max_err,
+                                "rms_error_mm": rms, "level": level, "verdict": verdict}
+                    else:
+                        resp = {"status": "error", "message": "[ACCURACY] No touch-dot targets were found by the camera. Is the sheet printed with touch dots (Step 2) and still in place?",
+                                "dots": results}
+                except Exception as e:
+                    resp = {"status": "error", "message": f"Accuracy check failed: {e}"}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
         elif parsed.path == "/api/verify_touch_dots":
             query = parse_qs(parsed.query)
             filename = query.get("file", ["Cut.svg"])[0]
@@ -2944,20 +3158,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             af_data = json.load(f)
 
                     M = np.array(af_data["matrix"], dtype=np.float64)
-
-                    from src.svg_injector import extract_touch_dots
-                    from src.vision_detector import TransformEstimator
-                    bed_height = cfg.get("bed_height_mm", 235.0)
-                    design_fids = design_fiducials_for(filepath, cfg)
-                    dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, design_fiducials=design_fids)
-
-                    dots_arr = np.array(dots_nom, dtype=np.float64)
-                    trans_dots = TransformEstimator.transform_points(dots_arr, M)
-                    touch_pts_bed = [(float(p[0]), float(p[1])) for p in trans_dots]
-
-                    orig_arr = np.array([[origin_nom[0], origin_nom[1]]], dtype=np.float64)
-                    trans_orig = TransformEstimator.transform_points(orig_arr, M)
-                    paper_origin_bed = (float(trans_orig[0][0]), float(trans_orig[0][1]))
+                    touch_pts_bed, paper_origin_bed = touch_points_bed(filepath, M, cfg)
 
                     z_safe = cfg.get("z_safe_mm", 5.0)
                     f_travel = cfg.get("f_travel_mm_min", 3000.0)
