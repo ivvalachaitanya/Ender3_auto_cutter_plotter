@@ -85,6 +85,8 @@ DEFAULT_CONFIG = {
     "crowsnest_url": "http://localhost:8080/?action=stream",
     "camera_settle_seconds": 2.0,
     "search_mode": "assisted",
+    "marker_size_mm": 7.895,
+    "camera_rotation_deg": 0.0,
 }
 
 
@@ -959,14 +961,14 @@ HTML_PAGE = """<!DOCTYPE html>
           <div>
             <label class="text-[11px] text-slate-400 block mb-1">Search Strategy & Speed Profile:</label>
             <select id="search-mode-select" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-purple-300 font-mono">
-              <option value="assisted" selected>🎯 Assisted Align (Wait for Paper Adjust ➔ Auto 2 & 3)</option>
-              <option value="auto">⚡ Auto-Cascade (Fastest ➔ Spiral ➔ Deep)</option>
-              <option value="fast">🚀 Turbo / Direct (Fastest ~5s, exact hit)</option>
-              <option value="spiral">🌀 Adaptive Spiral (Standard ~15s, local expansion)</option>
-              <option value="exhaustive">🔍 Exhaustive Bed Sweep (Deep ~45s, arbitrary placement)</option>
+              <option value="assisted" selected>🎯 Assisted Align (slide sheet under camera ➔ auto-lock the rest, ~25s)</option>
+              <option value="auto">⚡ Auto (search near last spot ➔ whole bed if needed)</option>
+              <option value="fast">🚀 Fast (sheet where it was last time, ~20s)</option>
+              <option value="spiral">🌀 Spiral (sheet moved up to ~25mm, ~25-35s)</option>
+              <option value="exhaustive">🔍 Whole-Bed Sweep (sheet anywhere, ~1-3 min)</option>
             </select>
             <p class="text-[10px] text-slate-400 mt-1 leading-relaxed" id="search-mode-hint">
-              <span class="text-purple-400 font-semibold">Tip:</span> Parks at Marker 1 & dwells 2s for camera stabilization. Adjust paper under camera; once Marker 1 is spotted, it auto-locks Markers 2 & 3.
+              <span class="text-purple-400 font-semibold">Tip:</span> Parks where all marks stay reachable. Slide the sheet until any mark is in view; the sheet rotation is read from that mark and the other two are locked automatically.
             </p>
           </div>
           <button id="run-scan-btn" onclick="runScan()" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 rounded text-xs shadow-md">📷 Run Autonomous Scan & Align</button>

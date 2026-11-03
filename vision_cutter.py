@@ -225,9 +225,23 @@ def main():
                 mm_per_pixel=args.mm_per_pixel,
                 search_mode=args.search_mode,
                 settle_seconds=args.settle_seconds,
+                marker_size_mm=float(cfg.get("marker_size_mm", 10.0 * 300.0 / 380.0)),
+                camera_rotation_deg=float(cfg.get("camera_rotation_deg", 0.0)),
             )
+            stats = FiducialSearcher.last_run or {}
             try:
                 cfg["nominal_fiducials"] = measured_gantry_points.tolist()
+                # Learn the camera's mounting twist (smoothed) so the next scan predicts marks better.
+                twist = stats.get("camera_rotation_deg")
+                if twist is not None and abs(twist) < 5.0:
+                    prev = float(cfg.get("camera_rotation_deg", 0.0))
+                    cfg["camera_rotation_deg"] = round(0.5 * prev + 0.5 * float(twist), 3)
+                    logger.info("Camera mounting twist measured %.2f deg (stored %.2f deg).", twist, cfg["camera_rotation_deg"])
+                mpp_meas = stats.get("measured_mm_per_pixel")
+                if mpp_meas and abs(mpp_meas / args.mm_per_pixel - 1.0) > 0.03:
+                    logger.warning("Markers measure %.5f mm/px but config mm_per_pixel is %.5f (%.1f%% off). "
+                                   "Consider updating mm_per_pixel in Settings.", mpp_meas, args.mm_per_pixel,
+                                   100.0 * (mpp_meas / args.mm_per_pixel - 1.0))
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2)
                 logger.info("Updated nominal_fiducials in config.json with newly centered coordinates.")
