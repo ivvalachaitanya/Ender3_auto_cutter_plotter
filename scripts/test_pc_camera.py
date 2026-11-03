@@ -24,7 +24,7 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 # Add src package directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 try:
     import cv2

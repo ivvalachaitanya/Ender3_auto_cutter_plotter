@@ -21,8 +21,9 @@ except ImportError:
     sys.exit(1)
 
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
-INPUT_STL = os.path.join(WORKSPACE_DIR, "SupportoDragKnife.STL")
-OUTPUT_STL = os.path.join(WORKSPACE_DIR, "SupportoDragKnife_with_C270_CameraMount.stl")
+MECHANICAL_DIR = os.path.join(WORKSPACE_DIR, "..", "mechanical")
+INPUT_STL = os.path.join(MECHANICAL_DIR, "SupportoDragKnife.STL")
+OUTPUT_STL = os.path.join(MECHANICAL_DIR, "SupportoDragKnife_with_C270_CameraMount.stl")
 
 
 def generate_mount(offset_x=-25.0, offset_y=0.0, screw_dia=3.2, hinge_width=6.2, side="left"):

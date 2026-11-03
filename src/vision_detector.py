@@ -577,6 +577,14 @@ class FiducialSearcher:
         """
         import math
         mode = (search_mode or "auto").lower().strip()
+
+        # Determine actual camera frame resolution (avoid hardcoding 640x480)
+        try:
+            _probe_frame = camera_client.get_frame()
+            _cam_h, _cam_w = _probe_frame.shape[:2]
+        except Exception:
+            _cam_w, _cam_h = 640, 480  # Safe fallback
+
         logger.info("======================================================")
         logger.info("Autonomous Fiducial Engine | Strategy: '%s'", mode.upper())
         logger.info("Design Fiducials: %s", design_fiducials.tolist())
@@ -619,7 +627,7 @@ class FiducialSearcher:
             gantry_x1, gantry_y1, pt1 = res1
             bed_x1, bed_y1 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt1[0], pixel_v=pt1[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x1, camera_gantry_y=gantry_y1,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
@@ -652,7 +660,7 @@ class FiducialSearcher:
             gantry_x2, gantry_y2, pt2 = res2
             bed_x2, bed_y2 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt2[0], pixel_v=pt2[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x2, camera_gantry_y=gantry_y2,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
@@ -701,7 +709,7 @@ class FiducialSearcher:
             gantry_x3, gantry_y3, pt3 = res3
             bed_x3, bed_y3 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt3[0], pixel_v=pt3[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x3, camera_gantry_y=gantry_y3,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
@@ -787,7 +795,7 @@ class FiducialSearcher:
             gantry_x1, gantry_y1, pt1 = res1
             bed_x1, bed_y1 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt1[0], pixel_v=pt1[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x1, camera_gantry_y=gantry_y1,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
@@ -821,7 +829,7 @@ class FiducialSearcher:
             gantry_x2, gantry_y2, pt2 = res2
             bed_x2, bed_y2 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt2[0], pixel_v=pt2[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x2, camera_gantry_y=gantry_y2,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,
@@ -871,7 +879,7 @@ class FiducialSearcher:
             gantry_x3, gantry_y3, pt3 = res3
             bed_x3, bed_y3 = TransformEstimator.pixel_to_bed_space(
                 pixel_u=pt3[0], pixel_v=pt3[1],
-                frame_width=640, frame_height=480,
+                frame_width=_cam_w, frame_height=_cam_h,
                 camera_gantry_x=gantry_x3, camera_gantry_y=gantry_y3,
                 mm_per_pixel=mm_per_pixel,
                 camera_offset_x=camera_offset_x, camera_offset_y=camera_offset_y,

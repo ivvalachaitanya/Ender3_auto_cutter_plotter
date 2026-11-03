@@ -217,6 +217,7 @@ class CameraClient:
         self.camera_index = camera_index
         self.timeout = timeout
         self.session = requests.Session()
+        self._local_cap = None  # Persistent OpenCV VideoCapture handle for local camera
 
     def get_frame(self) -> np.ndarray:
         """
@@ -271,18 +272,21 @@ class CameraClient:
                 except Exception as e:
                     logger.debug("Camera frame grab failed for %s: %s", url, e)
 
-        # Attempt 2: Local OpenCV VideoCapture fallback
-        cap = cv2.VideoCapture(self.camera_index)
-        if not cap.isOpened():
+        # Attempt 2: Local OpenCV VideoCapture fallback (persistent handle)
+        if self._local_cap is None or not self._local_cap.isOpened():
+            self._local_cap = cv2.VideoCapture(self.camera_index)
+        if not self._local_cap.isOpened():
             raise RuntimeError(f"Failed to open local camera device at index {self.camera_index} and HTTP snapshot failed.")
 
-        try:
-            ret, frame = cap.read()
+        ret, frame = self._local_cap.read()
+        if not ret or frame is None:
+            # Retry once after reopening (USB cameras can drop)
+            self._local_cap.release()
+            self._local_cap = cv2.VideoCapture(self.camera_index)
+            ret, frame = self._local_cap.read()
             if not ret or frame is None:
                 raise RuntimeError(f"Failed to read frame from OpenCV camera index {self.camera_index}.")
-            return frame
-        finally:
-            cap.release()
+        return frame
 
     def set_camera_autofocus(self, enable: bool) -> bool:
         """
