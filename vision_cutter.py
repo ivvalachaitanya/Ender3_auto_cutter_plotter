@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from moonraker_client import CameraClient, MoonrakerClient
 from vision_detector import FiducialDetector, FiducialSearcher, TransformEstimator, extract_svg_fiducials
-from drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser
+from drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser, optimize_cut_order
 
 # Configure logging
 logging.basicConfig(
@@ -63,6 +63,11 @@ def parse_args():
     parser.add_argument("--mm-per-pixel", type=float, default=cfg.get("mm_per_pixel", 0.0293), help="Camera scale calibration factor (mm/pixel).")
     parser.add_argument("--blade-offset", type=float, default=cfg.get("blade_offset_mm", 0.35), help="Drag knife blade offset (mm).")
     parser.add_argument("--overcut", type=float, default=cfg.get("overcut_mm", 0.5), help="Overcut past the start of closed contours for clean weeding (mm, 0 = off).")
+    parser.add_argument("--lead-in", type=float, default=cfg.get("lead_in_margin_mm", 0.3), help="Lead-in margin: closed contours are plunged blade-offset + this far behind their start and dragged in to align the blade (mm, 0 = off).")
+    parser.add_argument("--noise-tolerance", type=float, default=cfg.get("path_noise_tolerance_mm", 0.0), help="Remove collinear points and zig-zags smaller than this to avoid needless swivels; for traced bitmaps, leave 0 for clean vector designs (mm, 0 = off).")
+    parser.add_argument("--no-optimize-order", action="store_true", default=not cfg.get("optimize_cut_order", True), help="Cut paths in SVG order instead of inside-first nearest-neighbour order.")
+    parser.add_argument("--passes", type=int, default=cfg.get("passes", 1), help="Number of passes per contour (thick material).")
+    parser.add_argument("--pass-step", type=float, default=cfg.get("pass_depth_step_mm", 0.0), help="Extra depth per pass (mm); pass k cuts at z_cut - k * step.")
 
     # Vision & Fiducials
     default_nom = json.dumps(cfg.get("nominal_fiducials", [[0.0, 210.0], [170.0, 210.0], [0.0, 20.0]]))
@@ -347,13 +352,23 @@ def main():
             transformed_pts = TransformEstimator.transform_points(pts_arr, M)
             transformed_contours.append([(pt[0], pt[1]) for pt in transformed_pts])
 
-        # Step 6: Drag Knife Swivel Arc Compensation & Trajectory Planning
-        logger.info("Planning drag-knife trajectories (Blade Offset: %.3f mm)...", args.blade_offset)
-        knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0, overcut_mm=args.overcut)
+        # Step 6: Path optimisation, Drag Knife Swivel Arc Compensation & Trajectory Planning
+        if args.no_optimize_order:
+            ordered = [(c, None) for c in transformed_contours]
+            logger.info("Cut order: SVG file order (optimisation disabled).")
+        else:
+            ordered = optimize_cut_order(transformed_contours, start_xy=(0.0, 0.0),
+                                         noise_tolerance_mm=args.noise_tolerance)
+            logger.info("Cut order optimised: %d contours, inside-first, nearest-neighbour, smooth start points.", len(ordered))
+
+        logger.info("Planning drag-knife trajectories (Blade Offset: %.3f mm, Overcut: %.2f mm, Lead-in: %.2f mm)...",
+                    args.blade_offset, args.overcut, args.lead_in)
+        knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0,
+                                         overcut_mm=args.overcut, lead_in_margin_mm=args.lead_in)
 
         planned_contours = []
-        for contour in transformed_contours:
-            planned_moves = knife_planner.plan_contour(contour)
+        for contour, closed in ordered:
+            planned_moves = knife_planner.plan_contour(contour, closed=closed)
             if planned_moves:
                 planned_contours.append(planned_moves)
 
@@ -387,6 +402,8 @@ def main():
             dry_run=args.dry_run,
             z_lift_swivel=args.z_lift_swivel,
             pause_before_cut=args.pause_before_cut,
+            passes=args.passes,
+            pass_depth_step=args.pass_step,
         )
         final_gcode = gcode_gen.generate_gcode(
             planned_contours,
@@ -398,6 +415,11 @@ def main():
         with open(output_filename, "w", encoding="utf-8") as f:
             f.write(final_gcode)
         logger.info("Saved final G-code file to '%s'.", output_filename)
+        st = getattr(gcode_gen, "stats", None)
+        if st:
+            logger.info("Job: %d paths x %d pass(es), cut length %.2f m, estimated time %dm %ds.",
+                        st["contours"], st["passes"], st["cut_mm"] / 1000.0,
+                        int(st["estimated_s"] // 60), int(st["estimated_s"] % 60))
 
     # Step 8: Upload to Moonraker & Start Job
     if args.no_upload:

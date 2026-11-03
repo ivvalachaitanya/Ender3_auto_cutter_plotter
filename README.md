@@ -170,6 +170,37 @@ python vision_cutter.py --svg samples/Cut.svg --mock
 
 ---
 
+## 🔪 Cut Path Pipeline (SVG input)
+
+`src/drag_knife_planner.py` turns SVG shapes into drag-knife G-code in these steps. Several
+techniques follow [PolyCut](https://github.com/IridiumIO/PolyCut); this is an independent
+implementation.
+
+1. **Flattening:** each SVG segment is flattened separately. Straight edges keep their exact
+   corners and curves are subdivided to 0.01 mm. Every subpath (e.g. the hole in an "O") is
+   its own contour, and all shape types (`rect`, `circle`, `polygon`, …) are cut.
+2. **Noise filter** (`path_noise_tolerance_mm`, default off): removes collinear points and tiny
+   zig-zags that make the blade swivel needlessly. Use ~0.05 mm for traced bitmaps only.
+3. **Cut order** (`optimize_cut_order`): inside-first, so holes and inner details are cut before
+   the outline that frees the piece. Within that rule it picks the nearest path, and prefers
+   starting in the direction the blade is already pointing. Closed shapes may be cut in
+   either direction, and open paths may be reversed.
+4. **Start points:** closed shapes start on a smooth point or mid-edge, never on a corner.
+5. **Blade alignment at the plunge:** the blade keeps its heading while lifted. The tip
+   therefore lands exactly on the start point and swivels in place to the new direction,
+   like a corner. The first cut of a job has an unknown heading, so it plunges
+   `blade offset + lead_in_margin_mm` behind its start and drags into line instead.
+6. **Corners:** a swivel arc (`G2`/`G3`) about the corner for turns over 30°.
+7. **Overcut** (`overcut_mm`): closed shapes re-cut their own start for this distance,
+   following the shape through corners.
+8. **Passes** (`passes`, `pass_depth_step_mm`): each contour is cut `passes` times, each pass
+   `pass_depth_step_mm` deeper, before moving to the next contour.
+
+All of these are in the Web GUI Settings modal and as CLI flags (`--overcut`, `--lead-in`,
+`--noise-tolerance`, `--no-optimize-order`, `--passes`, `--pass-step`).
+
+---
+
 ## ⚙️ PolyCut / JScut Profile for Creality Ender 3 Gen 1
 
 Because PolyCut lacks a built-in pre-set profile for Creality Ender 3 Gen 1, use the pre-configured profile included in [`samples/ender3_gen1_polycut_profile.json`](file:///C:/Users/chait/.gemini/antigravity/scratch/Ender3_auto_cutter_plotter/samples/ender3_gen1_polycut_profile.json) or enter these settings into PolyCut:

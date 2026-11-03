@@ -4,7 +4,7 @@ Ender 3 Auto Cutter Plotter - Core Package
 
 __version__ = "1.0.0"
 
-from .drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser
+from .drag_knife_planner import DragKnifePlanner, GCodeGenerator, SVGParser, optimize_cut_order
 from .gcode_transformer import GCodeTransformer
 from .moonraker_client import CameraClient, MoonrakerClient
 from .svg_injector import (
@@ -25,6 +25,7 @@ __all__ = [
     "DragKnifePlanner",
     "GCodeGenerator",
     "SVGParser",
+    "optimize_cut_order",
     "GCodeTransformer",
     "CameraClient",
     "MoonrakerClient",

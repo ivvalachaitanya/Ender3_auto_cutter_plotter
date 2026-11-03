@@ -68,6 +68,11 @@ DEFAULT_CONFIG = {
     "bed_height_mm": 235.0,
     "blade_offset_mm": 0.35,
     "overcut_mm": 0.5,
+    "lead_in_margin_mm": 0.3,
+    "path_noise_tolerance_mm": 0.0,
+    "optimize_cut_order": True,
+    "passes": 1,
+    "pass_depth_step_mm": 0.0,
     "camera_offset_x_mm": -25.0,
     "camera_offset_y_mm": 0.0,
     "mm_per_pixel": 0.05,
@@ -1173,6 +1178,30 @@ HTML_PAGE = """<!DOCTYPE html>
             <label class="text-slate-400 block mb-1">Closed-Path Overcut (mm, 0 = off):</label>
             <input type="number" id="cfg-overcut" step="0.1" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
           </div>
+          <div>
+            <label class="text-slate-400 block mb-1">First-Cut Lead-in Margin (mm, 0 = off):</label>
+            <input type="number" id="cfg-lead-in" step="0.1" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            <span class="text-[10px] text-slate-500">Later cuts align the blade with an in-place swivel</span>
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Path Noise Filter (mm, 0 = off):</label>
+            <input type="number" id="cfg-noise-tol" step="0.01" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            <span class="text-[10px] text-slate-500">0.05 for traced bitmaps; keep 0 for clean vector designs</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <input type="checkbox" id="cfg-optimize-order" class="accent-emerald-500">
+            <label for="cfg-optimize-order" class="text-slate-400">Optimise cut order (inside-first, nearest)</label>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-slate-400 block mb-1">Passes:</label>
+              <input type="number" id="cfg-passes" step="1" min="1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            </div>
+            <div>
+              <label class="text-slate-400 block mb-1">Depth / pass (mm):</label>
+              <input type="number" id="cfg-pass-step" step="0.05" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+            </div>
+          </div>
         </div>
 
         <!-- Camera Calibration -->
@@ -1512,6 +1541,11 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-bed-height').value = cfg.bed_height_mm;
             document.getElementById('cfg-blade-offset').value = cfg.blade_offset_mm;
             document.getElementById('cfg-overcut').value = cfg.overcut_mm !== undefined ? cfg.overcut_mm : 0.5;
+            document.getElementById('cfg-lead-in').value = cfg.lead_in_margin_mm !== undefined ? cfg.lead_in_margin_mm : 0.3;
+            document.getElementById('cfg-noise-tol').value = cfg.path_noise_tolerance_mm !== undefined ? cfg.path_noise_tolerance_mm : 0.0;
+            document.getElementById('cfg-optimize-order').checked = cfg.optimize_cut_order !== false;
+            document.getElementById('cfg-passes').value = cfg.passes !== undefined ? cfg.passes : 1;
+            document.getElementById('cfg-pass-step').value = cfg.pass_depth_step_mm !== undefined ? cfg.pass_depth_step_mm : 0.0;
             document.getElementById('cfg-cam-offset-x').value = cfg.camera_offset_x_mm;
             document.getElementById('cfg-cam-offset-y').value = cfg.camera_offset_y_mm;
             document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
@@ -1612,6 +1646,11 @@ HTML_PAGE = """<!DOCTYPE html>
         bed_height_mm: parseFloat(document.getElementById('cfg-bed-height').value),
         blade_offset_mm: parseFloat(document.getElementById('cfg-blade-offset').value),
         overcut_mm: Math.max(0, parseFloat(document.getElementById('cfg-overcut').value) || 0.0),
+        lead_in_margin_mm: Math.max(0, parseFloat(document.getElementById('cfg-lead-in').value) || 0.0),
+        path_noise_tolerance_mm: Math.max(0, parseFloat(document.getElementById('cfg-noise-tol').value) || 0.0),
+        optimize_cut_order: document.getElementById('cfg-optimize-order').checked,
+        passes: Math.max(1, parseInt(document.getElementById('cfg-passes').value) || 1),
+        pass_depth_step_mm: Math.max(0, parseFloat(document.getElementById('cfg-pass-step').value) || 0.0),
         camera_offset_x_mm: parseFloat(document.getElementById('cfg-cam-offset-x').value),
         camera_offset_y_mm: parseFloat(document.getElementById('cfg-cam-offset-y').value),
         mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
