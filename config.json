@@ -4,7 +4,7 @@
   "blade_offset_mm": 0.35,
   "camera_offset_x_mm": 29.6,
   "camera_offset_y_mm": -1.2,
-  "mm_per_pixel": 0.0293,
+  "mm_per_pixel": 0.0301,
   "z_safe_mm": 5,
   "z_cut_mm": 3.0,
   "z_lift_swivel_mm": 0,
@@ -17,16 +17,16 @@
   "z_scan_mm": 20,
   "nominal_fiducials": [
     [
-      0.0,
-      225.311
+      7.088,
+      230.348
     ],
     [
-      165.627,
-      222.703
+      176.956,
+      227.563
     ],
     [
-      0.0,
-      38.873
+      4.177,
+      50.313
     ]
   ],
   "design_fiducials": [
@@ -42,5 +42,6 @@
       15.0,
       15.0
     ]
-  ]
+  ],
+  "camera_rotation_deg": -0.176
 }
