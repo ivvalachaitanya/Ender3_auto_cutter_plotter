@@ -48,8 +48,8 @@ Everything runs from a browser-based **Cutter Studio** (`web_gui.py`) or the com
 - BLTouch (tested 43 mm left of the knife) for homing and the bed mesh
 - Spring-loaded drag-knife holder with a Roland-style 45° blade, in place of the hotend
 - Logitech C270 webcam on the toolhead (tested 29.6 mm right of the blade), refocused for close range
-- Printable parts in `mechanical/`: knife bracket (`SupportoDragKnife*.stl`, with or without the
-  C270 mount), C270 focus wheel, and an assembly (`Ender3VinylCutter.3mf`)
+- Printable parts in `mechanical/`: knife bracket (`SupportoDragKnife.STL` / `.SLDPRT`), C270 focus
+  wheel, and the full toolhead assembly (`Ender3VinylCutter.3mf`, `ender3vinylcutter.stl`)
 
 ## Installation
 
@@ -122,7 +122,7 @@ Ender3_auto_cutter_plotter/
 │   └── generate_custom_c270_mount.py
 ├── docs/                       Detailed documentation
 ├── samples/                    Example designs, PolyCut G-code, Ender 3 PolyCut profile
-├── mechanical/                 Printable knife bracket and camera mount
+├── mechanical/                 Printable knife bracket, C270 focus parts, toolhead assembly
 └── assets/                     Marker images, part renders, camera snapshots
 ```
 
