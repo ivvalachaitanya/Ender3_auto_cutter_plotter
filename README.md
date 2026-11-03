@@ -190,7 +190,10 @@ implementation.
    therefore lands exactly on the start point and swivels in place to the new direction,
    like a corner. The first cut of a job has an unknown heading, so it plunges
    `blade offset + lead_in_margin_mm` behind its start and drags into line instead.
-6. **Corners:** a swivel arc (`G2`/`G3`) about the corner for turns over 30°.
+6. **Corners:** a swivel arc about the corner for turns over 30°. By default it is written as
+   short `G1` segments (within 0.005 mm), which works on any printer. Set `use_gcode_arcs: true`
+   (or `--gcode-arcs`) to write `G2`/`G3` instead; that needs `[gcode_arcs]` in `printer.cfg`, and
+   the pipeline falls back to segments if the printer does not have it.
 7. **Overcut** (`overcut_mm`): closed shapes re-cut their own start for this distance,
    following the shape through corners.
 8. **Passes** (`passes`, `pass_depth_step_mm`): each contour is cut `passes` times, each pass

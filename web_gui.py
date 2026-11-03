@@ -71,6 +71,7 @@ DEFAULT_CONFIG = {
     "lead_in_margin_mm": 0.3,
     "path_noise_tolerance_mm": 0.0,
     "optimize_cut_order": True,
+    "use_gcode_arcs": False,
     "passes": 1,
     "pass_depth_step_mm": 0.0,
     "camera_offset_x_mm": -25.0,

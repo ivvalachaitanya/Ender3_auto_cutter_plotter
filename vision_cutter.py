@@ -66,6 +66,7 @@ def parse_args():
     parser.add_argument("--lead-in", type=float, default=cfg.get("lead_in_margin_mm", 0.3), help="Lead-in margin: closed contours are plunged blade-offset + this far behind their start and dragged in to align the blade (mm, 0 = off).")
     parser.add_argument("--noise-tolerance", type=float, default=cfg.get("path_noise_tolerance_mm", 0.0), help="Remove collinear points and zig-zags smaller than this to avoid needless swivels; for traced bitmaps, leave 0 for clean vector designs (mm, 0 = off).")
     parser.add_argument("--no-optimize-order", action="store_true", default=not cfg.get("optimize_cut_order", True), help="Cut paths in SVG order instead of inside-first nearest-neighbour order.")
+    parser.add_argument("--gcode-arcs", action="store_true", default=bool(cfg.get("use_gcode_arcs", False)), help="Write swivels as G2/G3 (needs [gcode_arcs] in printer.cfg) instead of short G1 segments.")
     parser.add_argument("--passes", type=int, default=cfg.get("passes", 1), help="Number of passes per contour (thick material).")
     parser.add_argument("--pass-step", type=float, default=cfg.get("pass_depth_step_mm", 0.0), help="Extra depth per pass (mm); pass k cuts at z_cut - k * step.")
 
@@ -408,6 +409,19 @@ def main():
             except Exception as e:
                 logger.warning("Could not calculate touch verification points: %s", e)
 
+        use_arcs = args.gcode_arcs
+        if use_arcs and not args.mock:
+            # G2/G3 abort the job on Klipper without [gcode_arcs]; fall back to G1 segments.
+            try:
+                import requests
+                r = requests.get(f"{args.moonraker_url}/printer/objects/query?configfile=settings", timeout=5)
+                if "gcode_arcs" not in r.json()["result"]["status"]["configfile"]["settings"]:
+                    logger.warning("Printer has no [gcode_arcs] section: writing swivels as G1 segments instead of G2/G3.")
+                    use_arcs = False
+            except Exception as e:
+                logger.warning("Could not check printer for [gcode_arcs] (%s); writing swivels as G1 segments.", e)
+                use_arcs = False
+
         gcode_gen = GCodeGenerator(
             z_safe=args.z_safe,
             z_cut=args.z_cut,
@@ -418,6 +432,7 @@ def main():
             pause_before_cut=args.pause_before_cut,
             passes=args.passes,
             pass_depth_step=args.pass_step,
+            use_gcode_arcs=use_arcs,
         )
         final_gcode = gcode_gen.generate_gcode(
             planned_contours,

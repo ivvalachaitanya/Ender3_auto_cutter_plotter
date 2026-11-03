@@ -610,6 +610,7 @@ class GCodeGenerator:
         pause_before_cut: bool = False,
         passes: int = 1,
         pass_depth_step: float = 0.0,
+        use_gcode_arcs: bool = False,
     ):
         """
         Initialize G-code Generator.
@@ -624,6 +625,8 @@ class GCodeGenerator:
         :param pause_before_cut: If True, inserts PAUSE command before cutting starts to wait for user confirmation
         :param passes: Number of times each contour is cut (thick material)
         :param pass_depth_step: Extra depth per pass in mm; pass k cuts at z_cut - k * pass_depth_step
+        :param use_gcode_arcs: Emit swivels as G2/G3 (needs [gcode_arcs] in printer.cfg); otherwise as
+            short G1 segments within 0.005 mm of the arc, which works on any firmware
         """
         # Safe height must clear the cutting plane, not just Z=0 (z_cut may be > 0).
         self.z_safe = safe_travel_z(z_safe, z_cut)
@@ -636,6 +639,34 @@ class GCodeGenerator:
         self.pause_before_cut = pause_before_cut
         self.passes = max(1, int(passes))
         self.pass_depth_step = max(0.0, float(pass_depth_step))
+        self.use_gcode_arcs = bool(use_gcode_arcs)
+
+    def _arc_gcode(self, start: Point2, arc: Dict, feed: float, comment: str) -> List[str]:
+        """G-code for a swivel arc from `start`: one G2/G3, or G1 chords within 0.005 mm of it."""
+        if self.use_gcode_arcs:
+            g_cmd = "G2" if arc['cw'] else "G3"
+            return [f"{g_cmd} X{arc['x']:.4f} Y{arc['y']:.4f} I{arc['i']:.4f} J{arc['j']:.4f} F{feed:.1f} ; {comment}"]
+        cx, cy = start[0] + arc['i'], start[1] + arc['j']
+        r = math.hypot(arc['i'], arc['j'])
+        a0 = math.atan2(start[1] - cy, start[0] - cx)
+        a1 = math.atan2(arc['y'] - cy, arc['x'] - cx)
+        sweep = a1 - a0
+        if arc['cw'] and sweep > 0:
+            sweep -= 2 * math.pi
+        elif not arc['cw'] and sweep < 0:
+            sweep += 2 * math.pi
+        tol = 0.005
+        max_step = 2.0 * math.acos(max(-1.0, 1.0 - tol / r)) if r > tol else math.pi
+        n = max(1, int(math.ceil(abs(sweep) / max_step)))
+        out = []
+        for k in range(1, n + 1):
+            if k == n:
+                x, y = arc['x'], arc['y']
+            else:
+                a = a0 + sweep * k / n
+                x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+            out.append(f"G1 X{x:.4f} Y{y:.4f} F{feed:.1f}" + (f" ; {comment}" if k == 1 else ""))
+        return out
 
     def generate_gcode(
         self,
@@ -751,8 +782,7 @@ class GCodeGenerator:
                 # 3. Align the blade before cutting: swivel in place about the start point when the
                 #    blade heading is known, otherwise drag it into line along the first direction.
                 if entry_arc is not None:
-                    g_cmd = "G2" if entry_arc['cw'] else "G3"
-                    lines.append(f"{g_cmd} X{entry_arc['x']:.4f} Y{entry_arc['y']:.4f} I{entry_arc['i']:.4f} J{entry_arc['j']:.4f} F{self.f_cut:.1f} ; Entry swivel to align blade")
+                    lines.extend(self._arc_gcode(pos, entry_arc, self.f_cut, "Entry swivel to align blade"))
                     cut_len += _arc_length(pos, entry_arc)
                     pos = (entry_arc['x'], entry_arc['y'])
                 elif plunge_pivot != start_pivot:
@@ -768,15 +798,14 @@ class GCodeGenerator:
                         lines.append(f"G1 X{move['x']:.4f} Y{move['y']:.4f} F{self.f_cut:.1f}")
                         cut_len += math.hypot(move['x'] - pos[0], move['y'] - pos[1])
                     elif mtype == 'arc':
-                        g_cmd = "G2" if move['cw'] else "G3"
                         cut_len += _arc_length(pos, move)
                         if self.z_lift_swivel > 0.0 and not self.dry_run:
                             lift_z = z_work + self.z_lift_swivel
                             lines.append(f"G1 Z{lift_z:.4f} F{self.f_travel:.1f} ; Lift Z {self.z_lift_swivel:.2f}mm above cut for turn")
-                            lines.append(f"{g_cmd} X{move['x']:.4f} Y{move['y']:.4f} I{move['i']:.4f} J{move['j']:.4f} F{self.f_travel:.1f} ; Swivel arc in air")
+                            lines.extend(self._arc_gcode(pos, move, self.f_travel, "Swivel arc in air"))
                             lines.append(f"G1 Z{z_work:.4f} F{self.f_plunge:.1f} ; Re-plunge blade")
                         else:
-                            lines.append(f"{g_cmd} X{move['x']:.4f} Y{move['y']:.4f} I{move['i']:.4f} J{move['j']:.4f} F{self.f_cut:.1f} ; Swivel arc")
+                            lines.extend(self._arc_gcode(pos, move, self.f_cut, "Swivel arc"))
                     else:
                         continue
                     pos = (move['x'], move['y'])
