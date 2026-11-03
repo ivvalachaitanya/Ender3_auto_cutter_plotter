@@ -62,6 +62,7 @@ def parse_args():
     parser.add_argument("--camera-offset-y", type=float, default=cfg.get("camera_offset_y_mm", 0.0), help="Camera Y offset relative to knife tip (mm).")
     parser.add_argument("--mm-per-pixel", type=float, default=cfg.get("mm_per_pixel", 0.0293), help="Camera scale calibration factor (mm/pixel).")
     parser.add_argument("--blade-offset", type=float, default=cfg.get("blade_offset_mm", 0.35), help="Drag knife blade offset (mm).")
+    parser.add_argument("--overcut", type=float, default=cfg.get("overcut_mm", 0.5), help="Overcut past the start of closed contours for clean weeding (mm, 0 = off).")
 
     # Vision & Fiducials
     default_nom = json.dumps(cfg.get("nominal_fiducials", [[0.0, 210.0], [170.0, 210.0], [0.0, 20.0]]))
@@ -77,7 +78,7 @@ def parse_args():
     parser.add_argument("--z-scan", type=float, default=cfg.get("z_scan_mm", 20.0), help="Camera focal scanning Z height in mm (default: 20.0).")
     parser.add_argument("--z-safe", type=float, default=cfg.get("z_safe_mm", 5.0), help="Safe travel Z height (mm).")
     parser.add_argument("--z-cut", type=float, default=cfg.get("z_cut_mm", 0.0), help="Cutting Z depth (mm).")
-    parser.add_argument("--z-lift-swivel", type=float, default=cfg.get("z_lift_swivel_mm", 0.0), help="Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = in-plane).")
+    parser.add_argument("--z-lift-swivel", type=float, default=cfg.get("z_lift_swivel_mm", 0.0), help="Lift-and-Turn height above the cut depth for sharp corner swiveling in mm (0.0 = in-plane).")
     parser.add_argument("--f-cut", type=float, default=cfg.get("f_cut_mm_min", 1200.0), help="Cutting feedrate (mm/min).")
     parser.add_argument("--f-travel", type=float, default=cfg.get("f_travel_mm_min", 3000.0), help="Travel feedrate (mm/min).")
 
@@ -101,6 +102,7 @@ def parse_args():
     parser.add_argument("--use-cached-alignment", action="store_true", help="Reuse previously solved 2D affine matrix from affine_matrix.json if available.")
     parser.add_argument("--dry-run", action="store_true", help="Perform alignment check & generate G-code at safe Z without cutting.")
     parser.add_argument("--auto-start", action="store_true", help="Automatically trigger print job via Moonraker after upload.")
+    parser.add_argument("--pause-before-cut", action="store_true", help="Insert a PAUSE before the first cut (ignored when --verify-touch already pauses).")
     parser.add_argument("--verify-touch", action="store_true", help="Include pre-cut touch verification routine on 3 dots and Paper (0,0) pause in G-code.")
     parser.add_argument("--mock", action="store_true", help="Run in mock offline mode (simulates Klipper & camera responses).")
 
@@ -185,6 +187,7 @@ def main():
     # Step 3: Discover & Detect Physical Fiducials (or reuse cached affine matrix)
     M = None
     measured_bed_points = None
+    measured_gantry_points = None  # camera-centred gantry XY of each fiducial (auto search only)
 
     if args.use_cached_alignment:
         affine_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "affine_matrix.json")
@@ -283,36 +286,43 @@ def main():
         logger.info("Computing 2D Rigid Affine Transformation matrix...")
         M = TransformEstimator.compute_affine_matrix(design_nominal_points, measured_bed_points)
 
-        # Persist solved affine transformation matrix to affine_matrix.json
-        try:
-            a, b, tx = float(M[0, 0]), float(M[0, 1]), float(M[0, 2])
-            scale = float(math.sqrt(a * a + b * b))
-            angle_deg = float(math.degrees(math.atan2(b, a)))
-            ty = float(M[1, 2])
+        # Persist solved affine transformation matrix to affine_matrix.json.
+        # Never persist a mock (simulated) alignment: /api/cut reuses this file for real cuts.
+        if args.mock:
+            logger.warning("[MOCK] Simulated alignment is NOT saved to affine_matrix.json; output G-code is not aligned to a real sheet.")
+        else:
+            try:
+                a, b, tx = float(M[0, 0]), float(M[0, 1]), float(M[0, 2])
+                scale = float(math.sqrt(a * a + b * b))
+                angle_deg = float(math.degrees(math.atan2(b, a)))
+                ty = float(M[1, 2])
 
-            affine_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "affine_matrix.json")
-            affine_data = {
-                "file": os.path.basename(args.svg),
-                "matrix": M.tolist(),
-                "scale": scale,
-                "rotation_deg": angle_deg,
-                "translation_mm": [tx, ty],
-                "design_points": design_nominal_points.tolist() if hasattr(design_nominal_points, "tolist") else list(design_nominal_points),
-                "measured_bed_points": measured_bed_points.tolist() if hasattr(measured_bed_points, "tolist") else list(measured_bed_points),
-                "camera_offset": [float(args.camera_offset_x), float(args.camera_offset_y)],
-                "timestamp": time.time(),
-            }
-            with open(affine_path, "w", encoding="utf-8") as f:
-                json.dump(affine_data, f, indent=2)
-            logger.info("Saved 2D Affine Matrix to '%s' (Scale=%.4f, Rot=%.2f°, Tx=%.2f mm, Ty=%.2f mm).", affine_path, scale, angle_deg, tx, ty)
-        except Exception as e:
-            logger.warning("Could not persist affine_matrix.json: %s", e)
+                affine_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "affine_matrix.json")
+                affine_data = {
+                    "file": os.path.basename(args.svg),
+                    "matrix": M.tolist(),
+                    "scale": scale,
+                    "rotation_deg": angle_deg,
+                    "translation_mm": [tx, ty],
+                    "design_points": design_nominal_points.tolist() if hasattr(design_nominal_points, "tolist") else list(design_nominal_points),
+                    "measured_bed_points": measured_bed_points.tolist() if hasattr(measured_bed_points, "tolist") else list(measured_bed_points),
+                    "camera_offset": [float(args.camera_offset_x), float(args.camera_offset_y)],
+                    "timestamp": time.time(),
+                    "source": "auto",
+                }
+                # Raw gantry positions let the GUI re-solve M when only the camera offset changes.
+                if measured_gantry_points is not None:
+                    affine_data["gantry_points"] = np.asarray(measured_gantry_points, dtype=np.float64).tolist()
+                with open(affine_path, "w", encoding="utf-8") as f:
+                    json.dump(affine_data, f, indent=2)
+                logger.info("Saved 2D Affine Matrix to '%s' (Scale=%.4f, Rot=%.2f°, Tx=%.2f mm, Ty=%.2f mm).", affine_path, scale, angle_deg, tx, ty)
+            except Exception as e:
+                logger.warning("Could not persist affine_matrix.json: %s", e)
 
     # Step 5: Check if input is SVG or PolyCut/JScut G-code File
     output_filename = args.output
     if args.svg.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
         logger.info("Input file '%s' detected as G-code (PolyCut / JScut / Inkscape).", args.svg)
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
         from gcode_transformer import GCodeTransformer
 
         transformer = GCodeTransformer(matrix=M)
@@ -339,7 +349,7 @@ def main():
 
         # Step 6: Drag Knife Swivel Arc Compensation & Trajectory Planning
         logger.info("Planning drag-knife trajectories (Blade Offset: %.3f mm)...", args.blade_offset)
-        knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0)
+        knife_planner = DragKnifePlanner(blade_offset_mm=args.blade_offset, swivel_angle_threshold_deg=30.0, overcut_mm=args.overcut)
 
         planned_contours = []
         for contour in transformed_contours:
@@ -376,6 +386,7 @@ def main():
             f_travel=args.f_travel,
             dry_run=args.dry_run,
             z_lift_swivel=args.z_lift_swivel,
+            pause_before_cut=args.pause_before_cut,
         )
         final_gcode = gcode_gen.generate_gcode(
             planned_contours,

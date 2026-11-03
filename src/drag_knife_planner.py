@@ -57,20 +57,31 @@ class SVGParser:
             page_height_mm = (svg.height if svg.height else 1122.52) * px_to_mm
 
             for elem in svg.elements():
-                if isinstance(elem, svgelements.Path) and len(elem) > 0:
-                    elem_id = str(getattr(elem, 'id', '')).lower()
-                    if any(s in elem_id for s in ('fiducial', 'aruco', 'verification', 'touch_', 'paper_origin')):
-                        logger.info("Skipping non-cut verification/fiducial element ID '%s' from cut list.", elem_id)
-                        continue
+                # Accept every geometric shape (rect, circle, ellipse, line, polyline,
+                # polygon, path); convert non-path shapes to paths for uniform sampling.
+                if not isinstance(elem, svgelements.Shape):
+                    continue
+                elem_id = str(getattr(elem, 'id', '')).lower()
+                if any(s in elem_id for s in ('fiducial', 'aruco', 'verification', 'touch_', 'paper_origin')):
+                    logger.info("Skipping non-cut verification/fiducial element ID '%s' from cut list.", elem_id)
+                    continue
+                path = elem if isinstance(elem, svgelements.Path) else svgelements.Path(elem)
+                if len(path) == 0:
+                    continue
 
-                    contour: List[Tuple[float, float]] = []
-                    length_px = elem.length()
-                    length_mm = length_px * px_to_mm
+                # Sample each subpath separately so the blade lifts between them
+                # instead of cutting a straight line across the gap.
+                for subpath in path.as_subpaths():
+                    sub = svgelements.Path(subpath)
+                    length_mm = sub.length() * px_to_mm
+                    if length_mm < 1e-6:
+                        continue
                     num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
 
+                    contour: List[Tuple[float, float]] = []
                     for i in range(num_samples + 1):
                         t = i / float(num_samples)
-                        pt = elem.point(t)
+                        pt = sub.point(t)
                         if pt is None:
                             continue
                         x_mm = pt.x * px_to_mm
@@ -95,19 +106,23 @@ class SVGParser:
             elem_id = str(attr.get('id', '')).lower()
             if 'fiducial' in elem_id or 'aruco' in elem_id:
                 continue
-            contour = []
-            length_mm = path.length() * px_to_mm
-            num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
-            for i in range(num_samples + 1):
-                t = i / float(num_samples)
-                pt = path.point(t)
-                x_mm = pt.real * px_to_mm
-                y_raw = pt.imag * px_to_mm
-                y_mm = (page_height_mm - y_raw) if flip_y else y_raw
-                if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
-                    contour.append((x_mm, y_mm))
-            if len(contour) >= 2:
-                contours.append(contour)
+            # Sample each continuous subpath separately (no cut across gaps)
+            for sub in path.continuous_subpaths():
+                length_mm = sub.length() * px_to_mm
+                if length_mm < 1e-6:
+                    continue
+                contour = []
+                num_samples = max(2, int(math.ceil(length_mm / self.step_size_mm)))
+                for i in range(num_samples + 1):
+                    t = i / float(num_samples)
+                    pt = sub.point(t)
+                    x_mm = pt.real * px_to_mm
+                    y_raw = pt.imag * px_to_mm
+                    y_mm = (page_height_mm - y_raw) if flip_y else y_raw
+                    if not contour or (abs(contour[-1][0] - x_mm) > 1e-4 or abs(contour[-1][1] - y_mm) > 1e-4):
+                        contour.append((x_mm, y_mm))
+                if len(contour) >= 2:
+                    contours.append(contour)
 
         return contours
 
@@ -115,15 +130,17 @@ class SVGParser:
 class DragKnifePlanner:
     """Generates drag-knife toolhead trajectories with swivel corner compensation."""
 
-    def __init__(self, blade_offset_mm: float = 0.35, swivel_angle_threshold_deg: float = 30.0):
+    def __init__(self, blade_offset_mm: float = 0.35, swivel_angle_threshold_deg: float = 30.0, overcut_mm: float = 0.5):
         """
         Initialize Drag Knife Planner.
 
         :param blade_offset_mm: Distance between toolhead pivot center and trailing blade tip (mm)
         :param swivel_angle_threshold_deg: Minimum corner direction change angle (degrees) to trigger swivel arc
+        :param overcut_mm: Overcut distance along initial segment for closed contours to ensure clean weeding (mm)
         """
         self.blade_offset = blade_offset_mm
         self.swivel_threshold_rad = math.radians(swivel_angle_threshold_deg)
+        self.overcut_mm = overcut_mm
 
     @staticmethod
     def _normalize(vx: float, vy: float) -> Tuple[float, float]:
@@ -221,7 +238,8 @@ class DragKnifePlanner:
                     'corner': p1,
                 })
 
-                current_u = next_u
+            # Always update direction to current segment (prevents angular drift)
+            current_u = next_u
 
             # Cut move along segment: pivot moves to p2 + L * current_u
             end_pivot = (p2[0] + L * current_u[0], p2[1] + L * current_u[1])
@@ -231,7 +249,53 @@ class DragKnifePlanner:
                 'y': end_pivot[1],
             })
 
+        # Closed-loop overcut: extend cut slightly along initial segment for clean weeding
+        if len(contour) >= 3 and len(segments) >= 2 and self.overcut_mm > 0.0:
+            p_first = contour[0]
+            p_last = contour[-1]
+            if math.hypot(p_first[0] - p_last[0], p_first[1] - p_last[1]) < 0.1:
+                first_u = segments[0][2]
+                delta_angle = self._angle_between(current_u, first_u)
+                if abs(delta_angle) > self.swivel_threshold_rad and L > 0:
+                    p_close = segments[0][0]
+                    target_pivot = (p_close[0] + L * first_u[0], p_close[1] + L * first_u[1])
+                    moves.append({
+                        'type': 'arc',
+                        'x': target_pivot[0],
+                        'y': target_pivot[1],
+                        'i': -L * current_u[0],
+                        'j': -L * current_u[1],
+                        'cw': delta_angle < 0,
+                        'corner': p_close,
+                    })
+                # Re-trace the start of the contour for overcut_mm (following its first
+                # segments, not a straight line), stopping at any corner that would need a swivel.
+                remaining = self.overcut_mm
+                prev_u = first_u
+                for p1, _p2, u, dist in segments:
+                    if abs(self._angle_between(prev_u, u)) > self.swivel_threshold_rad:
+                        break
+                    step = min(remaining, dist)
+                    tip = (p1[0] + step * u[0], p1[1] + step * u[1])
+                    moves.append({
+                        'type': 'line',
+                        'x': tip[0] + L * u[0],
+                        'y': tip[1] + L * u[1],
+                    })
+                    remaining -= step
+                    prev_u = u
+                    if remaining <= 1e-9:
+                        break
+
         return moves
+
+
+MIN_CLEARANCE_MM = 5.0
+
+
+def safe_travel_z(z_safe: float, z_cut: float) -> float:
+    """Return a travel height at least MIN_CLEARANCE_MM above the cutting plane."""
+    return max(float(z_safe), float(z_cut) + MIN_CLEARANCE_MM)
 
 
 class GCodeGenerator:
@@ -251,17 +315,18 @@ class GCodeGenerator:
         """
         Initialize G-code Generator.
 
-        :param z_safe: Safe travel Z height in mm (default: 5.0 mm)
+        :param z_safe: Safe travel Z height in mm (absolute; raised to at least z_cut + MIN_CLEARANCE_MM)
         :param z_cut: Cutting Z depth in mm (default: 0.0 mm)
         :param f_cut: Cutting feedrate in mm/min (default: 1016 mm/min)
         :param f_travel: Rapid travel feedrate in mm/min (default: 2540 mm/min)
         :param f_plunge: Plunge feedrate in mm/min (default: 127 mm/min)
         :param dry_run: If True, sets z_cut = z_safe (no blade contact)
-        :param z_lift_swivel: Z height for Lift-and-Turn sharp corner swiveling in mm (0.0 = disabled/in-plane)
+        :param z_lift_swivel: Lift-and-Turn height ABOVE the cut depth in mm (0.0 = disabled/in-plane)
         :param pause_before_cut: If True, inserts PAUSE command before cutting starts to wait for user confirmation
         """
-        self.z_safe = max(z_safe, 5.0)
-        self.z_cut = z_safe if dry_run else z_cut
+        # Safe height must clear the cutting plane, not just Z=0 (z_cut may be > 0).
+        self.z_safe = safe_travel_z(z_safe, z_cut)
+        self.z_cut = self.z_safe if dry_run else z_cut
         self.f_cut = f_cut
         self.f_travel = f_travel
         self.f_plunge = f_plunge
@@ -318,11 +383,12 @@ class GCodeGenerator:
                 ox, oy = paper_origin[0], paper_origin[1]
                 lines.append("; --- Park at Paper Origin (0,0) ---")
                 lines.append(f"G1 X{ox:.4f} Y{oy:.4f} F{self.f_travel:.1f} ; Rapid to Paper Origin (0,0)")
-                lines.append("G1 Z1.0000 F1500.0 ; Hover 1mm above Paper (0,0) for visual alignment check")
+                hover_z = self.z_cut + 1.0
+                lines.append(f"G1 Z{hover_z:.4f} F1500.0 ; Hover 1mm above Paper (0,0) for visual alignment check")
                 lines.append("G4 P2000 ; Dwell 2s for visual alignment check at origin")
-                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; LIFT BLADE TO SAFE HEIGHT (>= 5mm) BEFORE PAUSE TO PREVENT DRAGGING")
+                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; LIFT BLADE TO SAFE HEIGHT (>= 5mm above cut) BEFORE PAUSE TO PREVENT DRAGGING")
             else:
-                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe travel height (>= 5mm) before pause")
+                lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe travel height (>= 5mm above cut) before pause")
 
             lines.append("")
             lines.append("M117 Alignment Check: Inspect dots & Resume")
@@ -334,7 +400,7 @@ class GCodeGenerator:
         if self.pause_before_cut and not touch_points:
             lines.append("")
             lines.append("; --- User Inspection Pause ---")
-            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe height (>= 5mm) before pause")
+            lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Ensure safe height (>= 5mm above cut) before pause")
             lines.append("M117 Check material & click Resume")
             lines.append('RESPOND TYPE=echo MSG="Job Paused! Inspect material & click RESUME to start cut."')
             lines.append("PAUSE ; Pause machine and wait for user to press Resume/OK")
@@ -355,9 +421,11 @@ class GCodeGenerator:
                 # 1. Rapid move to initial pivot location at safe Z
                 lines.append(f"G1 X{start_x:.4f} Y{start_y:.4f} F{self.f_travel:.1f} ; Rapid to initial position")
 
-                # 2. Controlled two-stage plunge to cut depth
+                # 2. Controlled two-stage plunge to cut depth (safe relative approach)
                 if not self.dry_run:
-                    lines.append("G1 Z0.5000 F2540.0 ; Approach surface")
+                    approach_z = min(self.z_safe, self.z_cut + 0.5)
+                    if approach_z > self.z_cut:
+                        lines.append(f"G1 Z{approach_z:.4f} F2540.0 ; Approach surface")
                     lines.append(f"G1 Z{self.z_cut:.4f} F{self.f_plunge:.1f} ; Plunge blade")
                 else:
                     lines.append(f"G1 Z{self.z_cut:.4f} F{self.f_travel:.1f} ; Dry run clearance")
@@ -370,7 +438,8 @@ class GCodeGenerator:
                 elif mtype == 'arc':
                     g_cmd = "G2" if move['cw'] else "G3"
                     if self.z_lift_swivel > 0.0 and not self.dry_run:
-                        lines.append(f"G1 Z{self.z_lift_swivel:.4f} F{self.f_travel:.1f} ; Lift Z for turn")
+                        lift_z = self.z_cut + self.z_lift_swivel
+                        lines.append(f"G1 Z{lift_z:.4f} F{self.f_travel:.1f} ; Lift Z {self.z_lift_swivel:.2f}mm above cut for turn")
                         lines.append(f"{g_cmd} X{move['x']:.4f} Y{move['y']:.4f} I{move['i']:.4f} J{move['j']:.4f} F{self.f_travel:.1f} ; Swivel arc in air")
                         lines.append(f"G1 Z{self.z_cut:.4f} F{self.f_plunge:.1f} ; Re-plunge blade")
                     else:

@@ -45,7 +45,6 @@ sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
 def find_python_executable() -> str:
     """Find the verified Python executable containing cv2, numpy, and svgelements."""
     candidates = [
-        r"C:\Users\chait\AppData\Local\Programs\Python\Python39\python.exe",
         sys.executable,
         shutil.which("python"),
         shutil.which("python3"),
@@ -65,9 +64,10 @@ PYTHON_EXE = find_python_executable()
 print(f"[INIT] Verified Python executable for subprocesses: {PYTHON_EXE}")
 
 DEFAULT_CONFIG = {
-    "bed_width_mm": 220.0,
-    "bed_height_mm": 220.0,
+    "bed_width_mm": 235.0,
+    "bed_height_mm": 235.0,
     "blade_offset_mm": 0.35,
+    "overcut_mm": 0.5,
     "camera_offset_x_mm": -25.0,
     "camera_offset_y_mm": 0.0,
     "mm_per_pixel": 0.05,
@@ -112,48 +112,64 @@ def get_available_workspace_files() -> list:
     )
 
 
+ALIGNMENT_MAX_AGE_S = 3600.0
+
+
+def load_alignment_for(filename):
+    """
+    Return (M, af_data, error) for the saved alignment, accepted only if it was solved for this
+    exact file within ALIGNMENT_MAX_AGE_S. Otherwise M is None and error explains why.
+    """
+    affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+    if not os.path.isfile(affine_file):
+        return None, None, "No alignment found. Run Step 3 'Scan & Align' first."
+    try:
+        with open(affine_file, "r", encoding="utf-8") as f:
+            af_data = json.load(f)
+        M = np.array(af_data["matrix"], dtype=np.float64)
+    except Exception as e:
+        return None, None, f"Could not read affine_matrix.json: {e}"
+    want = os.path.basename(filename)
+    if af_data.get("file") != want:
+        return None, af_data, f"Saved alignment is for '{af_data.get('file')}', not '{want}'. Run Step 3 'Scan & Align' for this file."
+    age = time.time() - float(af_data.get("timestamp", 0))
+    if age > ALIGNMENT_MAX_AGE_S:
+        return None, af_data, f"Saved alignment is {age / 60:.0f} min old (limit {ALIGNMENT_MAX_AGE_S / 60:.0f} min). Run Step 3 'Scan & Align' again."
+    return M, af_data, None
+
+
+def design_fiducials_for(filepath, cfg):
+    """Design-space fiducial points for a file, resolved the same way vision_cutter.py does."""
+    if filepath.lower().endswith(".svg") and os.path.isfile(filepath):
+        try:
+            from src.vision_detector import extract_svg_fiducials
+            pts = extract_svg_fiducials(filepath, bed_height_mm=cfg.get("bed_height_mm", 235.0))
+            if pts is not None and len(pts) >= 3:
+                return np.asarray(pts, dtype=np.float64)
+        except Exception as e:
+            print(f"[WARN] Could not extract SVG fiducials from {filepath}: {e}")
+    return np.array(cfg.get("design_fiducials", [[15.0, 195.0], [185.0, 195.0], [15.0, 15.0]]), dtype=np.float64)
+
+
 def get_file_bounding_box(filepath):
     """Calculate min_x, max_x, min_y, max_y bounding box for SVG or G-code file."""
-    min_x, max_x, min_y, max_y = 0.0, 0.0, 0.0, 0.0
+    min_x, min_y = float('inf'), float('inf')
+    max_x, max_y = float('-inf'), float('-inf')
     if filepath.lower().endswith((".gcode", ".nc", ".gc", ".tap")):
-        cur_x, cur_y = 0.0, 0.0
-        found = False
+        from src.gcode_transformer import iter_gcode_xy
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip().split(";")[0]
-                if not line:
-                    continue
-                parts = line.split()
-                cmd = parts[0].upper()
-                if cmd in ("G0", "G1", "G00", "G01", "G2", "G3", "G02", "G03"):
-                    for p in parts[1:]:
-                        if p.upper().startswith("X"):
-                            try:
-                                cur_x = float(p[1:])
-                                found = True
-                            except ValueError:
-                                pass
-                        elif p.upper().startswith("Y"):
-                            try:
-                                cur_y = float(p[1:])
-                                found = True
-                            except ValueError:
-                                pass
-                    if found:
-                        if min_x == 0.0 and max_x == 0.0:
-                            min_x, max_x = cur_x, cur_x
-                            min_y, max_y = cur_y, cur_y
-                        else:
-                            min_x = min(min_x, cur_x)
-                            max_x = max(max_x, cur_x)
-                            min_y = min(min_y, cur_y)
-                            max_y = max(max_y, cur_y)
+            for cur_x, cur_y in iter_gcode_xy(f):
+                min_x = min(min_x, cur_x)
+                max_x = max(max_x, cur_x)
+                min_y = min(min_y, cur_y)
+                max_y = max(max_y, cur_y)
     else:
         try:
             sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
             from drag_knife_planner import SVGParser
             parser_obj = SVGParser(step_size_mm=1.0)
-            contours = parser_obj.parse_svg_paths(filepath, flip_y=False)
+            # Same Y orientation as the cut pipeline so the alignment matrix applies directly.
+            contours = parser_obj.parse_svg_paths(filepath, flip_y=True)
             if contours:
                 all_pts = [pt for contour in contours for pt in contour]
                 min_x = min(p[0] for p in all_pts)
@@ -163,21 +179,31 @@ def get_file_bounding_box(filepath):
         except Exception as e:
             print(f"[WARN] Failed to extract SVG bounding box: {e}")
 
-    if max_x == 0.0 and max_y == 0.0:
+    if max_x == float('-inf') or max_y == float('-inf'):
         min_x, max_x, min_y, max_y = 0.0, 210.0, 0.0, 297.0
 
     return min_x, max_x, min_y, max_y
 
 
+_config_cache = None
+_config_mtime = 0.0
+
+
 def load_config():
-    """Load configuration from config.json or return defaults."""
+    """Load configuration from config.json or return defaults (cached by file modification time)."""
+    global _config_cache, _config_mtime
     if os.path.isfile(CONFIG_PATH):
         try:
+            mtime = os.path.getmtime(CONFIG_PATH)
+            if _config_cache is not None and mtime == _config_mtime:
+                return _config_cache.copy()
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 config = DEFAULT_CONFIG.copy()
                 config.update(data)
-                return config
+                _config_cache = config
+                _config_mtime = mtime
+                return config.copy()
         except Exception as e:
             print("[WARN] Failed to load config.json:", e)
     return DEFAULT_CONFIG.copy()
@@ -193,13 +219,16 @@ def recalculate_affine_from_settings(cfg):
     if not os.path.isfile(affine_path):
         return
 
-    gantry_fids = cfg.get("nominal_fiducials")
-    if not gantry_fids or len(gantry_fids) < 3:
-        return
-
     try:
         with open(affine_path, "r", encoding="utf-8") as f:
             af_data = json.load(f)
+
+        # Only re-solve from the gantry points recorded with THIS alignment; config
+        # nominal_fiducials may come from a different scan or sheet.
+        gantry_fids = af_data.get("gantry_points")
+        if not gantry_fids or len(gantry_fids) < 3:
+            print("[SETTINGS] affine_matrix.json has no gantry_points; re-run Step 3 to apply new camera offsets.")
+            return
 
         design_pts = af_data.get("design_points")
         if not design_pts or len(design_pts) < 3:
@@ -230,7 +259,7 @@ def recalculate_affine_from_settings(cfg):
         af_data["translation_mm"] = [tx, ty]
         af_data["measured_bed_points"] = new_bed_pts
         af_data["camera_offset"] = [cam_off_x, cam_off_y]
-        af_data["timestamp"] = time.time()
+        # Keep the original scan timestamp: a new camera offset does not make an old scan fresh.
 
         with open(affine_path, "w", encoding="utf-8") as f:
             json.dump(af_data, f, indent=2)
@@ -242,6 +271,8 @@ def recalculate_affine_from_settings(cfg):
 
 def save_config(new_config):
     """Save configuration dictionary to config.json."""
+    global _config_mtime
+    _config_mtime = 0.0
     config = load_config()
     config.update(new_config)
     try:
@@ -260,8 +291,8 @@ def save_config(new_config):
 def render_gcode_preview_html(filepath, bed_w=210.0, bed_h=297.0):
     """Parse G-code moves and return rendered HTML bed mat preview with travel/cut paths."""
     cur_x, cur_y = 0.0, 0.0
-    min_x, max_x = 0.0, 0.0
-    min_y, max_y = 0.0, 0.0
+    min_x, min_y = float('inf'), float('inf')
+    max_x, max_y = float('-inf'), float('-inf')
     travel_moves = []
     cut_moves = []
 
@@ -302,6 +333,8 @@ def render_gcode_preview_html(filepath, bed_w=210.0, bed_h=297.0):
     except Exception as e:
         print(f"[WARN] G-code preview parse error: {e}")
 
+    if max_x == float('-inf') or max_y == float('-inf'):
+        min_x, max_x, min_y, max_y = 0.0, 210.0, 0.0, 297.0
     gc_w = max(max_x, 10.0)
     gc_h = max(max_y, 10.0)
 
@@ -1136,6 +1169,10 @@ HTML_PAGE = """<!DOCTYPE html>
             <input type="number" id="cfg-blade-offset" step="0.01" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
             <span class="text-[10px] text-slate-500">Standard Roland 45° blade offset is 0.35 mm</span>
           </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Closed-Path Overcut (mm, 0 = off):</label>
+            <input type="number" id="cfg-overcut" step="0.1" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
+          </div>
         </div>
 
         <!-- Camera Calibration -->
@@ -1172,7 +1209,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <input type="number" id="cfg-z-cut" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
           </div>
           <div>
-            <label class="text-slate-400 block mb-1">Lift-and-Turn Swivel Height (mm):</label>
+            <label class="text-slate-400 block mb-1">Lift-and-Turn Height above Cut Z (mm, 0 = off):</label>
             <input type="number" id="cfg-z-lift-swivel" step="0.1" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
             <span class="text-[10px] text-slate-500">0.0 = in-plane (vinyl); 0.5 = lift-and-turn (paper)</span>
           </div>
@@ -1435,6 +1472,11 @@ HTML_PAGE = """<!DOCTYPE html>
         addLog('[ERROR] Please jog to and lock all 3 registration marks before solving alignment.');
         return;
       }
+      const fileSel = document.getElementById('svg-file');
+      if (!fileSel || !fileSel.value) {
+        addLog('[ERROR] Select the cut file in Step 1 before solving alignment.');
+        return;
+      }
       addLog('[MANUAL] Solving 2D Affine Transformation Matrix from 3 locked points...');
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -1443,7 +1485,7 @@ HTML_PAGE = """<!DOCTYPE html>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           actual: manualLockedPoints,
-          nominal: [[15.0, 15.0], [195.0, 15.0], [15.0, 282.0]]
+          file: fileSel.value
         }),
         signal: controller.signal
       })
@@ -1469,6 +1511,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-bed-width').value = cfg.bed_width_mm;
             document.getElementById('cfg-bed-height').value = cfg.bed_height_mm;
             document.getElementById('cfg-blade-offset').value = cfg.blade_offset_mm;
+            document.getElementById('cfg-overcut').value = cfg.overcut_mm !== undefined ? cfg.overcut_mm : 0.5;
             document.getElementById('cfg-cam-offset-x').value = cfg.camera_offset_x_mm;
             document.getElementById('cfg-cam-offset-y').value = cfg.camera_offset_y_mm;
             document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
@@ -1568,6 +1611,7 @@ HTML_PAGE = """<!DOCTYPE html>
         bed_width_mm: parseFloat(document.getElementById('cfg-bed-width').value),
         bed_height_mm: parseFloat(document.getElementById('cfg-bed-height').value),
         blade_offset_mm: parseFloat(document.getElementById('cfg-blade-offset').value),
+        overcut_mm: Math.max(0, parseFloat(document.getElementById('cfg-overcut').value) || 0.0),
         camera_offset_x_mm: parseFloat(document.getElementById('cfg-cam-offset-x').value),
         camera_offset_y_mm: parseFloat(document.getElementById('cfg-cam-offset-y').value),
         mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
@@ -2455,15 +2499,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 out_filepath = os.path.join(WORKSPACE_DIR, out_filename)
 
                 cmd = [PYTHON_EXE, "vision_cutter.py", "--svg", filename, "--output", out_filename, "--mock"]
-                affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
-                if os.path.isfile(affine_file):
-                    try:
-                        with open(affine_file, "r", encoding="utf-8") as f:
-                            af_data = json.load(f)
-                        if af_data.get("file") == filename or (time.time() - af_data.get("timestamp", 0)) < 3600:
-                            cmd.append("--use-cached-alignment")
-                    except Exception:
-                        pass
+                M, _af, align_err = load_alignment_for(filename)
+                if M is None:
+                    # Without a real alignment, --mock would fabricate fiducial positions and
+                    # produce G-code that is not aligned to the sheet. Refuse instead.
+                    resp = {"status": "error", "message": align_err}
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(resp).encode("utf-8"))
+                    return
+                cmd.append("--use-cached-alignment")
                 cfg = load_config()
                 z_lift_swivel = cfg.get("z_lift_swivel_mm", 0.0)
                 if z_lift_swivel > 0.0:
@@ -2571,22 +2617,30 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             if os.path.isfile(filepath):
                 cfg = load_config()
-                z_safe = cfg.get("z_safe_mm", 5.0)
+                from src.drag_knife_planner import safe_travel_z
+                z_safe = safe_travel_z(cfg.get("z_safe_mm", 5.0), cfg.get("z_cut_mm", 0.0))
                 f_travel = cfg.get("f_travel_mm_min", 3000.0)
                 moon_url = cfg.get("moonraker_url", "http://localhost:7125")
 
                 min_x, max_x, min_y, max_y = get_file_bounding_box(filepath)
 
-                gcode_lines = [
-                    "G90",
-                    f"G0 Z{z_safe:.2f} F{f_travel:.0f}",
-                    f"G0 X{min_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
-                    f"G0 X{max_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
-                    f"G0 X{max_x:.2f} Y{max_y:.2f} F{f_travel:.0f}",
-                    f"G0 X{min_x:.2f} Y{max_y:.2f} F{f_travel:.0f}",
-                    f"G0 X{min_x:.2f} Y{min_y:.2f} F{f_travel:.0f}",
-                ]
+                # The bounding box is in design coordinates; map its corners onto the bed with
+                # the same alignment the cut will use, so the frame shows where the cut lands.
+                corners = np.array([[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y]], dtype=np.float64)
+                M, _af, align_err = load_alignment_for(filename)
+                if M is not None:
+                    from src.vision_detector import TransformEstimator
+                    corners = TransformEstimator.transform_points(corners, M)
+                    frame_note = "aligned to scanned sheet"
+                else:
+                    frame_note = f"UNALIGNED design coordinates ({align_err})"
+
+                gcode_lines = ["G90", f"G0 Z{z_safe:.2f} F{f_travel:.0f}"]
+                for cx, cy in list(corners) + [corners[0]]:
+                    gcode_lines.append(f"G0 X{cx:.2f} Y{cy:.2f} F{f_travel:.0f}")
                 gcode_str = "\n".join(gcode_lines)
+                min_x, max_x = float(corners[:, 0].min()), float(corners[:, 0].max())
+                min_y, max_y = float(corners[:, 1].min()), float(corners[:, 1].max())
 
                 try:
                     sys.path.insert(0, os.path.join(WORKSPACE_DIR, "src"))
@@ -2594,9 +2648,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     client = MoonrakerClient(base_url=moon_url)
                     if client.is_connected():
                         success = client.send_gcode(gcode_str)
-                        msg = f"[FRAME] Traced 4-corner bounding box on printer! X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm."
+                        msg = f"[FRAME] Traced 4-corner bounding box on printer ({frame_note}). X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm."
+                        if not success:
+                            msg = "[FRAME] Moonraker rejected the frame G-code."
                     else:
-                        msg = f"[MOCK FRAME] Traced outer bounding box: X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm at Z={z_safe}mm."
+                        msg = f"[MOCK FRAME] Traced outer bounding box ({frame_note}): X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm at Z={z_safe}mm."
                     resp = {"status": "ok", "message": msg, "bounds": [min_x, max_x, min_y, max_y]}
                 except Exception as err:
                     resp = {"status": "ok", "message": f"[MOCK FRAME] Traced outer bounding box: X=[{min_x:.1f}, {max_x:.1f}] mm, Y=[{min_y:.1f}, {max_y:.1f}] mm."}
@@ -2695,37 +2751,50 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             post_body = self.rfile.read(content_length)
             try:
+                data = json.loads(post_body.decode("utf-8")) if post_body else {}
                 cfg = load_config()
-                default_nom = cfg.get("nominal_fiducials", [[0.0, 210.0], [170.0, 210.0], [0.0, 20.0]])
-                actual_pts = np.array(data.get("actual", []), dtype=np.float64)
-                nominal_pts = np.array(data.get("nominal", default_nom), dtype=np.float64)
+                filename = data.get("file", "")
+                gantry_pts = np.array(data.get("actual", []), dtype=np.float64)
 
-                if len(actual_pts) < 3:
+                if not filename:
+                    resp = {"status": "error", "message": "Select the cut file in Step 1 before solving alignment."}
+                elif len(gantry_pts) < 3 or any(p is None for p in data.get("actual", [])):
                     resp = {"status": "error", "message": "Please lock all 3 registration marks before solving alignment."}
-                elif cv2 is not None:
-                    matrix, inliers = cv2.estimateAffinePartial2D(nominal_pts, actual_pts)
-                    if matrix is not None:
-                        a, b, tx = matrix[0, 0], matrix[0, 1], matrix[0, 2]
-                        scale = math.sqrt(a * a + b * b)
-                        angle_rad = math.atan2(b, a)
-                        angle_deg = math.degrees(angle_rad)
-                        ty = matrix[1, 2]
-
-                        affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
-                        with open(affine_file, "w", encoding="utf-8") as f:
-                            json.dump({
-                                "matrix": matrix.tolist(),
-                                "scale": scale,
-                                "rotation_deg": angle_deg,
-                                "translation_mm": [tx, ty]
-                            }, f, indent=2)
-
-                        msg = f"[MANUAL ALIGNMENT] Solved 2D Affine Matrix! Scale={scale:.4f}, Rotation={angle_deg:+.2f}°, Tx={tx:+.2f}mm, Ty={ty:+.2f}mm."
-                        resp = {"status": "ok", "message": msg}
-                    else:
-                        resp = {"status": "error", "message": "Failed to compute 2D Affine Matrix from manual points."}
                 else:
-                    resp = {"status": "ok", "message": "Manual points locked."}
+                    # Marks are locked with the CAMERA crosshair, so bed position = gantry + camera offset.
+                    # Design points come from the same source the auto scan uses (Mark #0 TL, #1 TR, #2 BL).
+                    cam_off_x = float(cfg.get("camera_offset_x_mm", 0.0))
+                    cam_off_y = float(cfg.get("camera_offset_y_mm", 0.0))
+                    bed_pts = gantry_pts + np.array([cam_off_x, cam_off_y])
+                    design_pts = design_fiducials_for(resolve_workspace_file(filename), cfg)
+
+                    from src.vision_detector import TransformEstimator
+                    matrix = TransformEstimator.compute_affine_matrix(design_pts, bed_pts)
+                    a, b, tx = float(matrix[0, 0]), float(matrix[0, 1]), float(matrix[0, 2])
+                    scale = math.sqrt(a * a + b * b)
+                    angle_deg = math.degrees(math.atan2(b, a))
+                    ty = float(matrix[1, 2])
+
+                    affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
+                    with open(affine_file, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "file": os.path.basename(filename),
+                            "matrix": matrix.tolist(),
+                            "scale": scale,
+                            "rotation_deg": angle_deg,
+                            "translation_mm": [tx, ty],
+                            "design_points": design_pts.tolist(),
+                            "measured_bed_points": bed_pts.tolist(),
+                            "gantry_points": gantry_pts.tolist(),
+                            "camera_offset": [cam_off_x, cam_off_y],
+                            "timestamp": time.time(),
+                            "source": "manual",
+                        }, f, indent=2)
+
+                    msg = f"[MANUAL ALIGNMENT] Solved 2D Affine Matrix for '{filename}'! Scale={scale:.4f}, Rotation={angle_deg:+.2f}°, Tx={tx:+.2f}mm, Ty={ty:+.2f}mm."
+                    if abs(scale - 1.0) > 0.02:
+                        msg += f" WARNING: scale {scale:.4f} is far from 1.0, check that the marks were locked in order TL, TR, BL."
+                    resp = {"status": "ok", "message": msg}
             except Exception as err:
                 resp = {"status": "error", "message": str(err)}
 
@@ -2766,12 +2835,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/api/resume":
             try:
-                cfg = load_config()
-                moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
-                from src.moonraker_client import MoonrakerClient
-                mr = MoonrakerClient(base_url=moonraker_url)
+                mr = get_moonraker_client()
                 if not mr.is_connected():
-                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {mr.base_url}."}
                 else:
                     # Send RESUME_BASE first to bypass temperature checks; fall back to RESUME
                     success = mr.send_gcode("RESUME_BASE")
@@ -2791,12 +2857,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/api/cancel":
             try:
-                cfg = load_config()
-                moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
-                from src.moonraker_client import MoonrakerClient
-                mr = MoonrakerClient(base_url=moonraker_url)
+                mr = get_moonraker_client()
                 if not mr.is_connected():
-                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                    resp = {"status": "error", "message": f"Cannot connect to Moonraker at {mr.base_url}."}
                 else:
                     success = mr.send_gcode("CANCEL_PRINT")
                     if success:
@@ -2822,12 +2885,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             filepath = resolve_workspace_file(filename)
             affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
-            if not os.path.isfile(affine_file):
-                resp = {"status": "error", "message": "No affine alignment matrix found. Please run Step 3 'Run Autonomous Scan & Align' first."}
+            _M, af_data, align_err = load_alignment_for(filename)
+            if align_err:
+                resp = {"status": "error", "message": align_err}
             else:
                 try:
-                    with open(affine_file, "r", encoding="utf-8") as f:
-                        af_data = json.load(f)
                     cfg = load_config()
 
                     # Live sync: verify affine_matrix.json matches current camera offsets
@@ -2843,8 +2905,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
                     from src.svg_injector import extract_touch_dots
                     from src.vision_detector import TransformEstimator
-                    bed_height = cfg.get("bed_height_mm", 220.0)
-                    design_fids = cfg.get("design_fiducials", None)
+                    bed_height = cfg.get("bed_height_mm", 235.0)
+                    design_fids = design_fiducials_for(filepath, cfg)
                     dots_nom, origin_nom = extract_touch_dots(filepath, bed_height_mm=bed_height, design_fiducials=design_fids)
 
                     dots_arr = np.array(dots_nom, dtype=np.float64)
@@ -2855,17 +2917,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     trans_orig = TransformEstimator.transform_points(orig_arr, M)
                     paper_origin_bed = (float(trans_orig[0][0]), float(trans_orig[0][1]))
 
-                    moonraker_url = cfg.get("moonraker_url", "http://192.168.1.20:7125")
                     z_safe = cfg.get("z_safe_mm", 5.0)
                     f_travel = cfg.get("f_travel_mm_min", 3000.0)
                     f_plunge = 127.0
 
-                    from src.moonraker_client import MoonrakerClient
-                    mr = MoonrakerClient(base_url=moonraker_url)
+                    mr = get_moonraker_client()
                     if not mr.is_connected():
-                        resp = {"status": "error", "message": f"Cannot connect to Moonraker at {moonraker_url}."}
+                        resp = {"status": "error", "message": f"Cannot connect to Moonraker at {mr.base_url}."}
                     else:
-                        safe_z = max(float(z_safe), 5.0)
+                        from src.drag_knife_planner import safe_travel_z
+                        safe_z = safe_travel_z(z_safe, z_cut)
                         mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
                         for dx, dy in touch_pts_bed:
                             mr.jog_to(x=dx, y=dy, z=safe_z, feedrate=f_travel, wait_finish=True)
@@ -2874,7 +2935,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
 
                         mr.jog_to(x=paper_origin_bed[0], y=paper_origin_bed[1], z=safe_z, feedrate=f_travel, wait_finish=True)
-                        mr.jog_to(z=1.0, feedrate=1500.0, wait_finish=True)
+                        mr.jog_to(z=z_cut + 1.0, feedrate=1500.0, wait_finish=True)
                         time.sleep(2.0)
                         mr.jog_to(z=safe_z, feedrate=f_travel, wait_finish=True)
 
@@ -2905,17 +2966,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if is_scan:
                 cmd.append("--no-upload")
             else:
-                # /api/cut: use cached alignment from Step 3 if available, and trigger print
-                affine_file = os.path.join(WORKSPACE_DIR, "affine_matrix.json")
-                if os.path.isfile(affine_file):
-                    try:
-                        with open(affine_file, "r", encoding="utf-8") as f:
-                            af_data = json.load(f)
-                        # Reuse if for same file or generated within last hour
-                        if af_data.get("file") == filename or (time.time() - af_data.get("timestamp", 0)) < 3600:
-                            cmd.append("--use-cached-alignment")
-                    except Exception:
-                        pass
+                # /api/cut: reuse the Step 3 alignment only if it was solved for THIS file recently;
+                # otherwise vision_cutter.py re-scans the fiducials before cutting.
+                M_cached, _af, _err = load_alignment_for(filename)
+                if M_cached is not None:
+                    cmd.append("--use-cached-alignment")
                 cmd.append("--auto-start")
 
             if force_home == "1" or force_home == "true":
@@ -2959,8 +3014,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if not is_scan and (verify_touch == "1" or verify_touch == "true"):
                 cmd.append("--verify-touch")
 
-            if dry_flag:
-                cmd.append(dry_flag)
+            # Only ever forward the one flag this parameter is meant to carry.
+            if dry_flag in ("--dry-run", "1", "true"):
+                cmd.append("--dry-run")
 
             try:
                 res = subprocess.run(cmd, cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=180)

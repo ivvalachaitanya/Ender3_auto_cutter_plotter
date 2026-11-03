@@ -51,6 +51,96 @@ class GCodeTransformer:
         y_new = float(M[1, 0] * x + M[1, 1] * y + M[1, 2])
         return x_new, y_new
 
+    def transform_vector(self, dx: float, dy: float) -> Tuple[float, float]:
+        """Apply only the linear (rotation/scale) part of the matrix: for relative moves and arc offsets."""
+        if self.matrix is None:
+            return dx, dy
+        M = self.matrix
+        return float(M[0, 0] * dx + M[0, 1] * dy), float(M[1, 0] * dx + M[1, 1] * dy)
+
+    def _scale_factor(self) -> float:
+        if self.matrix is None:
+            return 1.0
+        M = self.matrix
+        return float(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0]) ** 0.5)
+
+    def transform_line(self, line: str, state: dict) -> str:
+        """
+        Transform one G-code line. `state` carries modal state between lines:
+        {'abs': bool, 'motion': int|None, 'x': float, 'y': float}.
+        Comments are preserved untouched; only X/Y/I/J/R words of motion moves are rewritten.
+        """
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        code, comment = split_gcode_comment(body)
+        words = parse_gcode_words(code)
+        if not words:
+            return line
+
+        gcodes = [w[1] for w in words if w[0] == "G"]
+        letters = {w[0] for w in words}
+
+        for g in gcodes:
+            if g == 90:
+                state["abs"] = True
+            elif g == 91:
+                state["abs"] = False
+            elif g in (0, 1, 2, 3):
+                state["motion"] = int(g)
+
+        # Leave lines with non-motion coordinate commands alone (G28 home, G92 set position,
+        # G53 machine coords, G4 dwell, G10 offsets, ...) and M/T-only lines.
+        if any(g not in MODAL_SAFE_GCODES for g in gcodes):
+            return line
+        if not gcodes and letters & {"M", "T"}:
+            return line
+        if state["motion"] not in (0, 1, 2, 3) or not letters & {"X", "Y", "I", "J", "R"}:
+            return line
+
+        vals = {}
+        spans = {}
+        for letter, value, span in words:
+            vals[letter] = value
+            spans[letter] = span
+
+        replacements = []  # (start, end, text)
+
+        def emit_pair(a: str, b: str, va: float, vb: float):
+            text = f"{a}{va:.4f} {b}{vb:.4f}"
+            if a in spans and b in spans:
+                replacements.append((*spans[a], f"{a}{va:.4f}"))
+                replacements.append((*spans[b], f"{b}{vb:.4f}"))
+            elif a in spans:
+                replacements.append((*spans[a], text))
+            else:
+                replacements.append((*spans[b], text))
+
+        if "X" in vals or "Y" in vals:
+            state["moved"] = True
+            if state["abs"]:
+                nx = vals.get("X", state["x"])
+                ny = vals.get("Y", state["y"])
+                state["x"], state["y"] = nx, ny
+                tx, ty = self.transform_point(nx, ny)
+            else:
+                dx, dy = vals.get("X", 0.0), vals.get("Y", 0.0)
+                state["x"] += dx
+                state["y"] += dy
+                tx, ty = self.transform_vector(dx, dy)
+            # Rotation mixes axes, so both X and Y must be written even if only one was given.
+            emit_pair("X", "Y", tx, ty)
+
+        if "I" in vals or "J" in vals:
+            ti, tj = self.transform_vector(vals.get("I", 0.0), vals.get("J", 0.0))
+            emit_pair("I", "J", ti, tj)
+
+        if "R" in vals:
+            replacements.append((*spans["R"], f"R{vals['R'] * self._scale_factor():.4f}"))
+
+        for start, end, text in sorted(replacements, reverse=True):
+            code = code[:start] + text + code[end:]
+        return code + comment + ending
+
     def transform_gcode_file(self, input_path: str, output_path: str, matrix: Optional[np.ndarray] = None) -> bool:
         """
         Read G-code file (from PolyCut, JScut, Inkscape), apply 2D Affine Transformation, and save.
@@ -74,56 +164,8 @@ class GCodeTransformer:
             with open(input_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-            transformed_lines = []
-            curr_x, curr_y = 0.0, 0.0
-            is_absolute = True
-
-            x_regex = re.compile(r"([XY])([+-]?[0-9.]+)")
-
-            for line in lines:
-                line_str = line.strip()
-
-                # Check positioning mode G90 (Absolute) vs G91 (Relative)
-                if "G90" in line_str:
-                    is_absolute = True
-                    transformed_lines.append(line)
-                    continue
-                elif "G91" in line_str:
-                    is_absolute = False
-                    transformed_lines.append(line)
-                    continue
-
-                # Skip non-motion comments / blank lines
-                if not line_str or line_str.startswith(";") or line_str.startswith("("):
-                    transformed_lines.append(line)
-                    continue
-
-                # Check motion commands (G0, G1, G2, G3)
-                if line_str.startswith("G0") or line_str.startswith("G1") or line_str.startswith("G2") or line_str.startswith("G3"):
-                    # Find X and Y values
-                    matches = dict(x_regex.findall(line_str))
-                    if "X" in matches or "Y" in matches:
-                        new_x = float(matches["X"]) if "X" in matches else curr_x
-                        new_y = float(matches["Y"]) if "Y" in matches else curr_y
-
-                        if is_absolute and self.matrix is not None:
-                            tx, ty = self.transform_point(new_x, new_y)
-                        else:
-                            tx, ty = new_x, new_y
-
-                        curr_x, curr_y = new_x, new_y
-
-                        # Replace X and Y in the line string
-                        new_line = line
-                        if "X" in matches:
-                            new_line = re.sub(r"X[+-]?[0-9.]+", f"X{tx:.4f}", new_line)
-                        if "Y" in matches:
-                            new_line = re.sub(r"Y[+-]?[0-9.]+", f"Y{ty:.4f}", new_line)
-
-                        transformed_lines.append(new_line)
-                        continue
-
-                transformed_lines.append(line)
+            state = {"abs": True, "motion": None, "x": 0.0, "y": 0.0}
+            transformed_lines = [self.transform_line(line, state) for line in lines]
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.writelines(transformed_lines)
@@ -134,3 +176,39 @@ class GCodeTransformer:
         except Exception as e:
             logger.error("Failed to transform G-code file: %s", e)
             return False
+
+
+def iter_gcode_xy(lines):
+    """Yield the (x, y) end point of every XY motion move in G-code `lines` (G90/G91 and modal aware)."""
+    parser = GCodeTransformer(matrix=None)
+    state = {"abs": True, "motion": None, "x": 0.0, "y": 0.0}
+    for line in lines:
+        state["moved"] = False
+        parser.transform_line(line, state)
+        if state["moved"]:
+            yield state["x"], state["y"]
+
+
+# G-codes that may share a line with a motion move without changing what X/Y mean.
+MODAL_SAFE_GCODES = {0, 1, 2, 3, 17, 21, 90, 91, 94}
+
+_WORD_RE = re.compile(r"([A-Za-z])\s*([+-]?(?:\d+\.?\d*|\.\d+))")
+
+
+def split_gcode_comment(line: str) -> Tuple[str, str]:
+    """Split a G-code line into (code, ';' comment)."""
+    semi = line.find(";")
+    return (line, "") if semi < 0 else (line[:semi], line[semi:])
+
+
+def parse_gcode_words(code: str) -> List[Tuple[str, float, Tuple[int, int]]]:
+    """Return [(LETTER, value, (start, end))] for every word in the code part of a line.
+    Parenthesised comments are blanked (same length) so spans still index into `code`."""
+    scan = re.sub(r"\([^)]*\)", lambda m: " " * len(m.group(0)), code)
+    out = []
+    for m in _WORD_RE.finditer(scan):
+        try:
+            out.append((m.group(1).upper(), float(m.group(2)), m.span()))
+        except ValueError:
+            continue
+    return out
