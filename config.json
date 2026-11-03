@@ -43,5 +43,6 @@
       15.0
     ]
   ],
-  "camera_rotation_deg": -0.176
+  "camera_rotation_deg": -0.176,
+  "bed_mesh_profile": "cutter"
 }

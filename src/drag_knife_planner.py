@@ -611,6 +611,7 @@ class GCodeGenerator:
         passes: int = 1,
         pass_depth_step: float = 0.0,
         use_gcode_arcs: bool = False,
+        mesh_profile: str = "default",
     ):
         """
         Initialize G-code Generator.
@@ -625,6 +626,7 @@ class GCodeGenerator:
         :param pause_before_cut: If True, inserts PAUSE command before cutting starts to wait for user confirmation
         :param passes: Number of times each contour is cut (thick material)
         :param pass_depth_step: Extra depth per pass in mm; pass k cuts at z_cut - k * pass_depth_step
+        :param mesh_profile: Klipper bed mesh profile loaded at the start ('' = leave the current mesh)
         :param use_gcode_arcs: Emit swivels as G2/G3 (needs [gcode_arcs] in printer.cfg); otherwise as
             short G1 segments within 0.005 mm of the arc, which works on any firmware
         """
@@ -640,6 +642,7 @@ class GCodeGenerator:
         self.passes = max(1, int(passes))
         self.pass_depth_step = max(0.0, float(pass_depth_step))
         self.use_gcode_arcs = bool(use_gcode_arcs)
+        self.mesh_profile = "".join(ch for ch in str(mesh_profile or "") if ch.isalnum() or ch in "_-")
 
     def _arc_gcode(self, start: Point2, arc: Dict, feed: float, comment: str) -> List[str]:
         """G-code for a swivel arc from `start`: one G2/G3, or G1 chords within 0.005 mm of it."""
@@ -694,7 +697,8 @@ class GCodeGenerator:
         lines.append("G21 ; Set units to millimeters")
         lines.append("G90 ; Use absolute coordinates")
         lines.append("M83 ; Relative extruder positioning (extruder disabled)")
-        lines.append("BED_MESH_PROFILE LOAD=default ; Load Klipper bed warp compensation mesh")
+        if self.mesh_profile:
+            lines.append(f"BED_MESH_PROFILE LOAD={self.mesh_profile} ; Load Klipper bed warp compensation mesh")
         lines.append(f"G0 Z{self.z_safe:.3f} F{self.f_travel:.1f} ; Move to clearance level")
 
         # Optional Pre-Cut Touch Verification Routine

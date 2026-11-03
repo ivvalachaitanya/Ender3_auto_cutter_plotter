@@ -72,6 +72,7 @@ DEFAULT_CONFIG = {
     "path_noise_tolerance_mm": 0.0,
     "optimize_cut_order": True,
     "use_gcode_arcs": False,
+    "bed_mesh_profile": "default",
     "passes": 1,
     "pass_depth_step_mm": 0.0,
     "camera_offset_x_mm": -25.0,
@@ -1251,6 +1252,11 @@ HTML_PAGE = """<!DOCTYPE html>
               <input type="number" id="cfg-pass-step" step="0.05" min="0" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200">
             </div>
           </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Klipper Bed Mesh Profile:</label>
+            <input type="text" id="cfg-mesh-profile" placeholder="cutter" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono">
+            <span class="text-[10px] text-slate-500">Loaded at the start of every cut. Probe it with the bed cold and no sheet on it.</span>
+          </div>
         </div>
 
         <!-- Camera Calibration -->
@@ -1595,6 +1601,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('cfg-optimize-order').checked = cfg.optimize_cut_order !== false;
             document.getElementById('cfg-passes').value = cfg.passes !== undefined ? cfg.passes : 1;
             document.getElementById('cfg-pass-step').value = cfg.pass_depth_step_mm !== undefined ? cfg.pass_depth_step_mm : 0.0;
+            document.getElementById('cfg-mesh-profile').value = cfg.bed_mesh_profile !== undefined ? cfg.bed_mesh_profile : 'default';
             document.getElementById('cfg-cam-offset-x').value = cfg.camera_offset_x_mm;
             document.getElementById('cfg-cam-offset-y').value = cfg.camera_offset_y_mm;
             document.getElementById('cfg-mm-px').value = cfg.mm_per_pixel;
@@ -1700,6 +1707,7 @@ HTML_PAGE = """<!DOCTYPE html>
         optimize_cut_order: document.getElementById('cfg-optimize-order').checked,
         passes: Math.max(1, parseInt(document.getElementById('cfg-passes').value) || 1),
         pass_depth_step_mm: Math.max(0, parseFloat(document.getElementById('cfg-pass-step').value) || 0.0),
+        bed_mesh_profile: (document.getElementById('cfg-mesh-profile').value || '').trim(),
         camera_offset_x_mm: parseFloat(document.getElementById('cfg-cam-offset-x').value),
         camera_offset_y_mm: parseFloat(document.getElementById('cfg-cam-offset-y').value),
         mm_per_pixel: parseFloat(document.getElementById('cfg-mm-px').value),
